@@ -34,14 +34,16 @@ from .sfz import load_reference_map
 # v6: layer_gains_db — each layer's median raw loudness relative to FF,
 # i.e. the measured dynamics curve of the real piano. Replaces the
 # synth's ad-hoc vel^1.6 loudness map.
+# v8: N_SLOTS 60 -> 150 (bass notes have audible partials to ~5 kHz;
+# 60 slots capped A0 at 1.65 kHz).
 # v7: attack_ms — onset-to-envelope-peak rise time. Instant-on partials
 # sound plucked; real hammered notes swell over 10-50 ms.
-CALIBRATION_VERSION = 7
+CALIBRATION_VERSION = 8
 
 # The bed decays slowly; this assumed rate back-projects the late
 # measurement to t=0 and is what the synth plays it back with.
 BED_DECAY_DB_S = 4.0
-N_SLOTS = 60  # fixed-length partial arrays; synth clips at Nyquist anyway
+N_SLOTS = 150  # fixed-length partial arrays; synth clips at Nyquist anyway
 
 AMP_DB_FLOOR = -80.0
 DECAY_MIN, DECAY_MAX = 0.3, 300.0  # dB/s

@@ -6,7 +6,7 @@
 
 use serde::Deserialize;
 
-pub const N_SLOTS: usize = 60;
+pub const N_SLOTS: usize = 150;
 
 #[derive(Deserialize)]
 struct RawCalibration {
@@ -72,7 +72,7 @@ impl Calibration {
 
     pub fn parse(json: &str) -> Result<Calibration, Box<dyn std::error::Error>> {
         let raw: RawCalibration = serde_json::from_str(json)?;
-        assert_eq!(raw.version, 7, "unknown calibration version");
+        assert_eq!(raw.version, 8, "unknown calibration version");
         let mut layers: Vec<Layer> = raw
             .layers
             .into_values()
