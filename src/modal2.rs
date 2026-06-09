@@ -69,6 +69,7 @@ struct Voice {
     bed_b: (f32, f32, f32),
     bed_a: (f32, f32),
     bed_z: (f32, f32),
+    bed_z2: (f32, f32),
 }
 
 impl Voice {
@@ -475,7 +476,7 @@ impl Synth for ModalV2 {
         // Hard strikes start sharp: tension-modulation glide, strongest
         // low on the keyboard, negligible for soft playing.
         let glide0 = self.knobs.glide_cents * vel * vel * vel * (1.2 - pos);
-        let angle = (0.25 + 0.5 * pos) * std::f32::consts::FRAC_PI_2;
+        let angle = (0.15 + 0.7 * pos) * std::f32::consts::FRAC_PI_2;
         // Hammer/action noise: dark (action thump + soundboard knock live
         // mostly below ~1-3 kHz), brighter when hit hard and toward the
         // treble. It also grows faster with velocity than the tone does —
@@ -522,6 +523,7 @@ impl Synth for ModalV2 {
             bed_b: biquad_lowpass(params.bed_centroid_hz, 1.2, self.sample_rate).0,
             bed_a: biquad_lowpass(params.bed_centroid_hz, 1.2, self.sample_rate).1,
             bed_z: (0.0, 0.0),
+            bed_z2: (0.0, 0.0),
         };
 
         let mut rng = self.rng;
@@ -720,13 +722,20 @@ impl Synth for ModalV2 {
                 }
                 voice.attack_slow = (voice.attack_slow + voice.attack_slow_coeff).min(1.0);
                 voice.attack_fast = (voice.attack_fast + voice.attack_fast_coeff).min(1.0);
-                let mut sum = sum_slow * voice.attack_slow + sum_fast * voice.attack_fast;
+                let sum = sum_slow * voice.attack_slow + sum_fast * voice.attack_fast;
+                let mut l = sum * voice.pan_l;
+                let mut r = sum * voice.pan_r;
                 if voice.noise_amp > 1e-7 || voice.bed_amp > 1e-7 {
-                    // xorshift32 white noise, shared by burst and bed.
+                    // xorshift32 white noise; two draws so the bed is
+                    // genuinely stereo (independent L/R streams).
                     self.rng ^= self.rng << 13;
                     self.rng ^= self.rng >> 17;
                     self.rng ^= self.rng << 5;
                     let white = (self.rng as f32 / u32::MAX as f32) * 2.0 - 1.0;
+                    self.rng ^= self.rng << 13;
+                    self.rng ^= self.rng >> 17;
+                    self.rng ^= self.rng << 5;
+                    let white2 = (self.rng as f32 / u32::MAX as f32) * 2.0 - 1.0;
                     // Hammer burst: resonant 2-pole lowpass.
                     {
                         let (b0, b1, b2) = voice.noise_b;
@@ -734,20 +743,25 @@ impl Synth for ModalV2 {
                         let y = b0 * white + voice.noise_z.0;
                         voice.noise_z.0 = b1 * white - a1 * y + voice.noise_z.1;
                         voice.noise_z.1 = b2 * white - a2 * y;
-                        sum += y * voice.noise_amp;
+                        l += y * voice.noise_amp * voice.pan_l;
+                        r += y * voice.noise_amp * voice.pan_r;
                         voice.noise_amp *= voice.noise_decay;
                     }
-                    // Bed: resonant biquad lowpass (transposed direct form 2).
+                    // Bed: two independent filtered noise streams.
                     let (b0, b1, b2) = voice.bed_b;
                     let (a1, a2) = voice.bed_a;
                     let y = b0 * white + voice.bed_z.0;
                     voice.bed_z.0 = b1 * white - a1 * y + voice.bed_z.1;
                     voice.bed_z.1 = b2 * white - a2 * y;
-                    sum += y * voice.bed_amp;
+                    let y2 = b0 * white2 + voice.bed_z2.0;
+                    voice.bed_z2.0 = b1 * white2 - a1 * y2 + voice.bed_z2.1;
+                    voice.bed_z2.1 = b2 * white2 - a2 * y2;
+                    l += y * voice.bed_amp * voice.pan_l;
+                    r += y2 * voice.bed_amp * voice.pan_r;
                     voice.bed_amp *= voice.bed_decay;
                 }
-                left[i] += sum * voice.pan_l;
-                right[i] += sum * voice.pan_r;
+                left[i] += l;
+                right[i] += r;
             }
             voice.compact();
         }
