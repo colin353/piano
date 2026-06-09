@@ -37,11 +37,17 @@ struct Voice {
     damping: f32,
     pan_l: f32,
     pan_r: f32,
-    // Hammer noise burst: filtered white noise with an exponential decay.
+    // Tonal attack ramp ~ hammer-string contact time (longer in the bass);
+    // resonators switching on instantly reads as a click.
+    attack_gain: f32,
+    attack_coeff: f32,
+    // Hammer noise burst: filtered white noise with an exponential decay,
+    // through a 2-pole lowpass (one pole leaves audible hiss — snare-like).
     noise_amp: f32,
     noise_decay: f32,
-    noise_lp: f32,
-    noise_lp_coeff: f32,
+    noise_b: (f32, f32, f32),
+    noise_a: (f32, f32),
+    noise_z: (f32, f32),
     // Resonant bed (soundboard/sympathetic ring): noise through a 2-pole
     // resonant lowpass, decaying slowly until the damper falls.
     bed_amp: f32,
@@ -190,9 +196,13 @@ impl Synth for ModalV2 {
 
         let pos = (note as f32 - 21.0) / 87.0;
         let angle = (0.25 + 0.5 * pos) * std::f32::consts::FRAC_PI_2;
-        // Hammer noise is brighter when hit hard and proportionally more
-        // prominent in the treble, where the tone is mostly thump+click.
-        let cutoff = (700.0 + 7000.0 * vel * vel) * (0.6 + 0.9 * pos);
+        // Hammer/action noise: dark (action thump + soundboard knock live
+        // mostly below ~1-3 kHz), brighter when hit hard and toward the
+        // treble. It also grows faster with velocity than the tone does —
+        // pp notes have almost none.
+        let cutoff = (300.0 + 2500.0 * vel * vel) * (0.5 + 0.8 * pos);
+        let noise_seconds = 0.010 + 0.015 * (1.0 - pos);
+        let noise_filter = biquad_lowpass(cutoff, 0.9, self.sample_rate);
 
         let mut voice = Voice {
             note,
@@ -206,10 +216,16 @@ impl Synth for ModalV2 {
             damping: 1.0,
             pan_l: angle.cos(),
             pan_r: angle.sin(),
-            noise_amp: target_rms * (0.6 + 1.2 * pos),
-            noise_decay: decay_factor(60.0 / 0.030, self.sample_rate),
-            noise_lp: 0.0,
-            noise_lp_coeff: (-std::f32::consts::TAU * cutoff / self.sample_rate).exp(),
+            attack_gain: 0.0,
+            attack_coeff: {
+                let contact = 0.0008 + 0.0035 * (1.0 - pos);
+                1.0 - (-1.0 / (contact * self.sample_rate)).exp()
+            },
+            noise_amp: target_rms * (0.12 + 0.30 * pos) * vel,
+            noise_decay: decay_factor(60.0 / noise_seconds, self.sample_rate),
+            noise_b: noise_filter.0,
+            noise_a: noise_filter.1,
+            noise_z: (0.0, 0.0),
             // bed_db was measured relative to the note's early RMS, which
             // is exactly target_rms after normalization.
             bed_amp: target_rms * 10f32.powf(params.bed_db / 20.0) * 1.5,
@@ -334,18 +350,24 @@ impl Synth for ModalV2 {
                         acc[lane] += out;
                     }
                 }
-                let mut sum = acc.iter().sum::<f32>();
+                voice.attack_gain += (1.0 - voice.attack_gain) * voice.attack_coeff;
+                let mut sum = acc.iter().sum::<f32>() * voice.attack_gain;
                 if voice.noise_amp > 1e-7 || voice.bed_amp > 1e-7 {
                     // xorshift32 white noise, shared by burst and bed.
                     self.rng ^= self.rng << 13;
                     self.rng ^= self.rng >> 17;
                     self.rng ^= self.rng << 5;
                     let white = (self.rng as f32 / u32::MAX as f32) * 2.0 - 1.0;
-                    // Hammer burst: one-pole lowpass.
-                    voice.noise_lp = voice.noise_lp * voice.noise_lp_coeff
-                        + white * (1.0 - voice.noise_lp_coeff);
-                    sum += voice.noise_lp * voice.noise_amp;
-                    voice.noise_amp *= voice.noise_decay;
+                    // Hammer burst: resonant 2-pole lowpass.
+                    {
+                        let (b0, b1, b2) = voice.noise_b;
+                        let (a1, a2) = voice.noise_a;
+                        let y = b0 * white + voice.noise_z.0;
+                        voice.noise_z.0 = b1 * white - a1 * y + voice.noise_z.1;
+                        voice.noise_z.1 = b2 * white - a2 * y;
+                        sum += y * voice.noise_amp;
+                        voice.noise_amp *= voice.noise_decay;
+                    }
                     // Bed: resonant biquad lowpass (transposed direct form 2).
                     let (b0, b1, b2) = voice.bed_b;
                     let (a1, a2) = voice.bed_a;
