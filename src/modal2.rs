@@ -52,14 +52,18 @@ struct Voice {
 }
 
 impl Voice {
-    fn push_resonator(&mut self, freq: f32, amp: f32, decay_db_s: f32, sr: f32) {
+    /// `phase` is randomized by the caller: starting every partial at
+    /// phase 0 makes the first few ms of all partials add constructively —
+    /// an N-times amplitude spike, worst for mid notes with many strong
+    /// partials. The soundboard scrambles phase in reality.
+    fn push_resonator(&mut self, freq: f32, amp: f32, phase: f32, decay_db_s: f32, sr: f32) {
         if self.n >= MAX_RES {
             return;
         }
         let w = std::f32::consts::TAU * freq / sr;
         let k = self.n;
-        self.re[k] = amp;
-        self.im[k] = 0.0;
+        self.re[k] = amp * phase.cos();
+        self.im[k] = amp * phase.sin();
         self.rot_re[k] = w.cos();
         self.rot_im[k] = w.sin();
         self.decay[k] = decay_factor(decay_db_s, sr);
@@ -176,7 +180,11 @@ impl Synth for ModalV2 {
         let vel = velocity as f32 / 127.0;
         let f0 = midi_note_freq(note) * 2f32.powf(params.f0_cents / 1200.0);
         let nyquist = self.sample_rate * 0.5 * 0.95;
-        let level = 0.30 * vel.powf(1.6);
+        // Target early RMS: global gain x velocity curve x the measured
+        // keyboard balance of the reference piano. Partial amplitudes are
+        // normalized to hit this exactly after the voice is built.
+        let target_rms = 0.06 * vel.powf(1.6) * 10f32.powf(params.loudness_db / 20.0);
+        let level = 1.0; // provisional partial scale, normalized below
         let detune_ratio =
             (unison_detune_cents(note) / 1200.0 * std::f32::consts::LN_2).exp_m1();
 
@@ -198,17 +206,26 @@ impl Synth for ModalV2 {
             damping: 1.0,
             pan_l: angle.cos(),
             pan_r: angle.sin(),
-            noise_amp: level * (0.2 + 0.5 * pos),
+            noise_amp: target_rms * (0.6 + 1.2 * pos),
             noise_decay: decay_factor(60.0 / 0.030, self.sample_rate),
             noise_lp: 0.0,
             noise_lp_coeff: (-std::f32::consts::TAU * cutoff / self.sample_rate).exp(),
-            bed_amp: level * 10f32.powf(params.bed_db / 20.0),
+            // bed_db was measured relative to the note's early RMS, which
+            // is exactly target_rms after normalization.
+            bed_amp: target_rms * 10f32.powf(params.bed_db / 20.0) * 1.5,
             bed_decay: decay_factor(BED_DECAY_DB_S, self.sample_rate),
             bed_b: biquad_lowpass(params.bed_centroid_hz, 1.2, self.sample_rate).0,
             bed_a: biquad_lowpass(params.bed_centroid_hz, 1.2, self.sample_rate).1,
             bed_z: (0.0, 0.0),
         };
 
+        let mut rng = self.rng;
+        let mut rand_phase = move || {
+            rng ^= rng << 13;
+            rng ^= rng >> 17;
+            rng ^= rng << 5;
+            (rng as f32 / u32::MAX as f32) * std::f32::consts::TAU
+        };
         for n in 1..=N_SLOTS {
             let nf = n as f32;
             let freq = nf * f0 * (1.0 + params.b * nf * nf).sqrt();
@@ -224,19 +241,47 @@ impl Synth for ModalV2 {
                 // fitted prompt-sound / aftersound rates: their sum
                 // reproduces the measured double decay, their detune the
                 // beats.
-                voice.push_resonator(freq, amp * (1.0 - split), fast, self.sample_rate);
+                voice.push_resonator(
+                    freq, amp * (1.0 - split), rand_phase(), fast, self.sample_rate,
+                );
                 voice.push_resonator(
                     freq * (1.0 + detune_ratio),
                     amp * split,
+                    rand_phase(),
                     slow,
                     self.sample_rate,
                 );
             } else {
-                voice.push_resonator(freq, amp, fast, self.sample_rate);
+                voice.push_resonator(freq, amp, rand_phase(), fast, self.sample_rate);
             }
+        }
+        // Normalize so the voice's RMS over the same 0.4 s window the
+        // calibration measured hits target_rms. Each resonator's mean
+        // square over W samples is (a^2/2) * (1 - d^2W) / (W (1 - d^2)) —
+        // for fast-decaying treble notes this is far below the initial
+        // RMS, and ignoring it left the treble too quiet.
+        let window = (0.4 * self.sample_rate) as i32;
+        let mean_square: f32 = (0..voice.n)
+            .map(|k| {
+                let a2 = voice.re[k] * voice.re[k] + voice.im[k] * voice.im[k];
+                let d2 = voice.decay[k] * voice.decay[k];
+                let g = if d2 > 0.999_999 {
+                    1.0
+                } else {
+                    (1.0 - d2.powi(window)) / (window as f32 * (1.0 - d2))
+                };
+                a2 / 2.0 * g
+            })
+            .sum();
+        let scale = target_rms / mean_square.sqrt().max(1e-9);
+        for k in 0..voice.n {
+            voice.re[k] *= scale;
+            voice.im[k] *= scale;
         }
         voice.pad();
         self.voices.push(voice);
+        // Advance the synth RNG so consecutive notes get fresh phases.
+        self.rng = self.rng.wrapping_mul(0x9E3779B9).wrapping_add(1);
     }
 
     fn note_off(&mut self, note: u8) {

@@ -59,7 +59,19 @@ fn main() {
                 piano::events::load_midi(path.as_ref()).expect("failed to load midi file");
             eprintln!("{} events over {:.1}s", events.len(),
                 events.last().map(|e| e.time).unwrap_or(0.0));
-            let audio = render_events(synth.as_mut(), &events, sample_rate, 6.0);
+            let mut audio = render_events(synth.as_mut(), &events, sample_rate, 6.0);
+            // Offline renders get peak normalization to -1 dBFS instead of
+            // letting the WAV writer hard-clip loud passages.
+            let peak = audio.iter().fold(0f32, |m, &s| m.max(s.abs()));
+            if peak > 0.0 {
+                let gain = 0.891 / peak;
+                if gain < 1.0 {
+                    eprintln!("peak {peak:.2} — applying {:.1} dB", 20.0 * gain.log10());
+                }
+                for s in &mut audio {
+                    *s *= gain.min(1.0);
+                }
+            }
             let out = out.unwrap_or_else(|| usage());
             write_wav(&out, &audio, sample_rate as u32).expect("failed to write wav");
             println!("wrote {}", out.display());

@@ -23,7 +23,11 @@ from .sfz import load_reference_map
 # amplitude extrapolation beyond the last measured partial.
 # v3: broadband resonant bed (soundboard/duplex/sympathetic ring) level
 # and spectral centroid, measured from the late part of each sample.
-CALIBRATION_VERSION = 3
+# v4: per-note loudness relative to the layer median, from raw (un-
+# normalized) sample RMS. The scorer normalizes loudness per pair, so
+# nothing else constrains keyboard loudness balance — without this the
+# mid-range (many comparable partials + loud bed) plays far too loud.
+CALIBRATION_VERSION = 4
 
 # The bed decays slowly; this assumed rate back-projects the late
 # measurement to t=0 and is what the synth plays it back with.
@@ -88,8 +92,22 @@ def _bed(audio, sr, partial_freqs):
     return level_t0, float(np.clip(centroid, 200.0, 4000.0))
 
 
+def _raw_loudness_db(raw, sr):
+    """Early RMS of the un-normalized sample, dB. Onset-trimmed the same
+    way features.prepare does."""
+    peak = np.max(np.abs(raw))
+    if peak <= 0:
+        return -60.0
+    above = np.flatnonzero(np.abs(raw) > 0.02 * peak)
+    start = max(0, above[0] - 64) if len(above) else 0
+    rms = np.sqrt(np.mean(raw[start: start + int(0.4 * sr)] ** 2))
+    return float(20 * np.log10(rms + 1e-9))
+
+
 def calibrate_one(sample):
-    audio = features.prepare(features.load_mono(sample.path))
+    raw = features.load_mono(sample.path)
+    loudness_db = _raw_loudness_db(raw, features.SR)
+    audio = features.prepare(raw)
     nominal = features.midi_note_freq(sample.note)
     n_partials = int(np.clip(18000 / nominal, 5, N_SLOTS))
     p = features.extract_partials(audio, nominal, n_partials=n_partials)
@@ -117,6 +135,7 @@ def calibrate_one(sample):
         "b": float(np.clip(p.inharmonicity, 1e-6, 2e-2)),
         "bed_db": round(bed_db, 1),
         "bed_centroid_hz": round(bed_centroid, 0),
+        "loudness_db": round(loudness_db, 2),  # made layer-relative below
         "amps_db": [round(float(v), 2) for v in amps],
         "decays_fast_db_s": [round(float(v), 2) for v in decays_fast],
         "decays_slow_db_s": [round(float(v), 2) for v in decays_slow],
@@ -149,6 +168,17 @@ def main():
                 smooth[i] = np.median(vals[lo:hi])
             for r, v in zip(layer_rows, smooth):
                 r[key] = round(float(v), 6 if key == "b" else 2)
+        # Loudness: relative to the layer median (absolute recording gain
+        # is arbitrary; the keyboard balance is what matters), lightly
+        # smoothed across neighbors.
+        loud = np.array([r["loudness_db"] for r in layer_rows])
+        loud -= np.median(loud)
+        smooth = loud.copy()
+        for i in range(len(loud)):
+            lo, hi = max(0, i - 1), min(len(loud), i + 2)
+            smooth[i] = np.median(loud[lo:hi])
+        for r, v in zip(layer_rows, smooth):
+            r["loudness_db"] = round(float(np.clip(v, -12, 12)), 2)
 
     out = {
         "version": CALIBRATION_VERSION,
