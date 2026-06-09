@@ -450,7 +450,17 @@ impl Synth for ModalV2 {
             if freq >= nyquist {
                 break;
             }
-            let amp = level * 10f32.powf(params.amps_db[n - 1] / 20.0);
+            // Calibration covers velocities 54..114; outside that range
+            // extrapolate brightness with a spectral tilt (softer hammer =
+            // darker, harder = brighter) since the layers carry no data.
+            let tilt_db = if velocity < 54 {
+                -0.010 * (54 - velocity) as f32 * (nf - 1.0)
+            } else if velocity > 114 {
+                0.008 * (velocity - 114) as f32 * (nf - 1.0)
+            } else {
+                0.0
+            };
+            let amp = level * 10f32.powf((params.amps_db[n - 1] + tilt_db) / 20.0);
             let fast = params.decays_fast[n - 1].clamp(0.3, 300.0);
             let slow = params.decays_slow[n - 1].clamp(0.3, fast);
             let split = params.slow_split[n - 1].clamp(0.02, 0.7);

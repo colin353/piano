@@ -31,7 +31,10 @@ from .sfz import load_reference_map
 # steeply for n=1-3 then plateau; extending the initial slope killed all
 # high partials), and every layer uses the FF-measured bed (PP beds are
 # inflated by mic noise — quiet source, fixed noise floor).
-CALIBRATION_VERSION = 5
+# v6: layer_gains_db — each layer's median raw loudness relative to FF,
+# i.e. the measured dynamics curve of the real piano. Replaces the
+# synth's ad-hoc vel^1.6 loudness map.
+CALIBRATION_VERSION = 6
 
 # The bed decays slowly; this assumed rate back-projects the late
 # measurement to t=0 and is what the synth plays it back with.
@@ -180,7 +183,10 @@ def main():
         # is arbitrary; the keyboard balance is what matters), lightly
         # smoothed across neighbors.
         loud = np.array([r["loudness_db"] for r in layer_rows])
-        loud -= np.median(loud)
+        layer_rows_median = float(np.median(loud))
+        for r in layer_rows:
+            r["_layer_median"] = layer_rows_median
+        loud -= layer_rows_median
         smooth = loud.copy()
         for i in range(len(loud)):
             lo, hi = max(0, i - 1), min(len(loud), i + 2)
@@ -196,11 +202,20 @@ def main():
             r["bed_db"] = nearest["bed_db"]
             r["bed_centroid_hz"] = nearest["bed_centroid_hz"]
 
+    ff_median = layers["FF"][0]["_layer_median"]
+    layer_gains = {
+        name: round(rows_[0]["_layer_median"] - ff_median, 2)
+        for name, rows_ in layers.items()
+    }
     out = {
         "version": CALIBRATION_VERSION,
         "n_slots": N_SLOTS,
+        # Median raw loudness of each layer relative to FF: the measured
+        # velocity->dynamics curve of the reference piano.
+        "layer_gains_db": layer_gains,
         "layers": {
-            name: [{k: v for k, v in r.items() if k != "layer"} for r in rows_]
+            name: [{k: v for k, v in r.items() if k not in ("layer", "_layer_median")}
+                   for r in rows_]
             for name, rows_ in sorted(layers.items())
         },
     }

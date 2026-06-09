@@ -69,7 +69,7 @@ impl Calibration {
 
     pub fn parse(json: &str) -> Result<Calibration, Box<dyn std::error::Error>> {
         let raw: RawCalibration = serde_json::from_str(json)?;
-        assert_eq!(raw.version, 5, "unknown calibration version");
+        assert_eq!(raw.version, 6, "unknown calibration version");
         let mut layers: Vec<Layer> = raw
             .layers
             .into_values()
