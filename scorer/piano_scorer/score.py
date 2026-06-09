@@ -23,7 +23,9 @@ import numpy as np
 from . import features
 from .sfz import load_reference_map
 
-SCORER_VERSION = 1
+# v2: longer analysis windows for bass, peak quality gate in the partial
+# tracker. Not comparable with v1 numbers.
+SCORER_VERSION = 2
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REFERENCE_REPO = REPO_ROOT / "assets" / "reference" / "SplendidGrandPiano"

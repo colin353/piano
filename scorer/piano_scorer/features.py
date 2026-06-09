@@ -9,6 +9,9 @@ wrong audio):
 - envelope: log-RMS energy envelope L1 distance (decay shape)
 - partials: inharmonicity B, partial frequency deviation, partial
             amplitude profile, and per-partial decay rates
+
+Score history is only comparable within one SCORER_VERSION (see score.py);
+bump it whenever anything in this file changes the numbers.
 """
 
 from dataclasses import dataclass
@@ -93,12 +96,24 @@ class PartialSet:
     freqs: np.ndarray         # measured partial frequencies, Hz (nan = absent)
     amps_db: np.ndarray       # partial amplitudes rel. partial 1, dB
     decays_db_s: np.ndarray   # per-partial decay rates, dB/s (nan = absent)
+    # Piano decay is two-stage (prompt sound / aftersound). The scorer uses
+    # the single average rate above; calibration uses the split fit below.
+    decays_fast: np.ndarray   # early decay rate, dB/s (nan = absent)
+    decays_slow: np.ndarray   # late decay rate, dB/s (nan = absent)
+    slow_split: np.ndarray    # fraction of initial amplitude in the slow
+                              # component, 0..1 (nan = absent)
 
 
 def extract_partials(y, nominal_f0, sr=SR, n_partials=N_PARTIALS):
     """Measure partial frequencies/amplitudes from an early-sustain window,
-    then per-partial decay rates from a band-limited STFT energy slope."""
-    seg = y[int(0.05 * sr): int(1.25 * sr)]
+    then per-partial decay rates from a band-limited STFT energy slope.
+
+    The analysis window grows for low notes (bass partials are a few Hz
+    apart and need the frequency resolution); peaks must clear the local
+    noise floor by ~10 dB or they are reported missing rather than letting
+    argmax lock onto noise."""
+    seg_seconds = float(np.clip(64.0 / nominal_f0, 1.2, 3.0))
+    seg = y[int(0.05 * sr): int((0.05 + seg_seconds) * sr)]
     if len(seg) < sr // 2:
         seg = y[: sr]
     n_fft = int(2 ** np.ceil(np.log2(len(seg))))
@@ -110,6 +125,11 @@ def extract_partials(y, nominal_f0, sr=SR, n_partials=N_PARTIALS):
         if hi <= lo + 2 or hi >= len(spec):
             return np.nan, 0.0
         k = lo + int(np.argmax(spec[lo:hi]))
+        width = hi - lo
+        floor_lo, floor_hi = max(0, lo - width), min(len(spec), hi + width)
+        floor = np.median(spec[floor_lo:floor_hi])
+        if spec[k] < 3.0 * floor:
+            return np.nan, 0.0
         if k == 0 or k + 1 >= len(spec):
             return k * freq_step, spec[k]
         # Quadratic interpolation around the bin peak.
@@ -120,7 +140,10 @@ def extract_partials(y, nominal_f0, sr=SR, n_partials=N_PARTIALS):
     # Fundamental first, searched widely around nominal.
     f0, a0 = peak_near(nominal_f0 * 0.94, nominal_f0 * 1.06)
     if not np.isfinite(f0) or a0 <= 0:
+        # Quality gate rejected it (weak fundamental — common in deep
+        # bass): fall back to the raw bin magnitude at nominal.
         f0 = nominal_f0
+        a0 = max(spec[int(nominal_f0 / freq_step)], 1e-9)
 
     # Iteratively track partials with a growing stretch estimate.
     freqs = np.full(n_partials, np.nan)
@@ -147,6 +170,10 @@ def extract_partials(y, nominal_f0, sr=SR, n_partials=N_PARTIALS):
     stft = np.abs(librosa.stft(y[: int(SCORE_SECONDS * sr)], n_fft=win, hop_length=hop))
     times = librosa.frames_to_time(np.arange(stft.shape[1]), sr=sr, hop_length=hop)
     decays = np.full(n_partials, np.nan)
+    decays_fast = np.full(n_partials, np.nan)
+    decays_slow = np.full(n_partials, np.nan)
+    slow_split = np.full(n_partials, np.nan)
+    frames_per_s = sr / hop
     for i, f in enumerate(freqs):
         if not np.isfinite(f):
             continue
@@ -159,11 +186,35 @@ def extract_partials(y, nominal_f0, sr=SR, n_partials=N_PARTIALS):
         end_i = peak_i + 1
         while end_i < len(e_db) and e_db[end_i] > floor:
             end_i += 1
-        if end_i - peak_i >= 4:
-            t = times[peak_i:end_i]
-            decays[i] = -float(np.polyfit(t, e_db[peak_i:end_i], 1)[0])
+        if end_i - peak_i < 4:
+            continue
+        t = times[peak_i:end_i]
+        decays[i] = -float(np.polyfit(t, e_db[peak_i:end_i], 1)[0])
 
-    return PartialSet(f0, b_est, freqs, amps_db, decays)
+        # Two-stage fit: early slope over the first ~0.35 s, late slope
+        # from 0.6 s after the peak to the end.
+        fast_end = min(end_i, peak_i + max(4, int(0.35 * frames_per_s)))
+        decays_fast[i] = -float(
+            np.polyfit(times[peak_i:fast_end], e_db[peak_i:fast_end], 1)[0]
+        )
+        slow_start = peak_i + int(0.6 * frames_per_s)
+        if end_i - slow_start >= 4:
+            slope, intercept = np.polyfit(
+                times[slow_start:end_i], e_db[slow_start:end_i], 1
+            )
+            decays_slow[i] = -float(slope)
+            # Amplitude of the slow component extrapolated back to the peak.
+            back = intercept + slope * times[peak_i]
+            slow_split[i] = float(
+                np.clip(10 ** ((back - e_db[peak_i]) / 20), 0.02, 0.7)
+            )
+        else:
+            decays_slow[i] = decays_fast[i]
+            slow_split[i] = 0.3
+
+    return PartialSet(
+        f0, b_est, freqs, amps_db, decays, decays_fast, decays_slow, slow_split
+    )
 
 
 def partial_distance(ref: PartialSet, syn: PartialSet):

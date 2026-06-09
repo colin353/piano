@@ -5,8 +5,10 @@
 //! playback) is the same core run faster than real time — see [`render`].
 
 pub mod baseline;
+pub mod calibration;
 pub mod events;
 pub mod modal;
+pub mod modal2;
 pub mod render;
 
 /// A streaming piano synthesizer.
@@ -36,12 +38,13 @@ pub fn create_synth(name: &str, sample_rate: f32) -> Option<Box<dyn Synth>> {
     match name {
         "baseline" => Some(Box::new(baseline::BaselineSynth::new(sample_rate))),
         "modal-v1" => Some(Box::new(modal::ModalSynth::new(sample_rate))),
+        "modal-v2" => Some(Box::new(modal2::ModalV2::new(sample_rate))),
         _ => None,
     }
 }
 
 /// Names of all registered synths, for CLI help and harness enumeration.
-pub const SYNTH_NAMES: &[&str] = &["baseline", "modal-v1"];
+pub const SYNTH_NAMES: &[&str] = &["baseline", "modal-v1", "modal-v2"];
 
 /// Equal-tempered frequency of a MIDI note, A4 (note 69) = 440 Hz.
 pub fn midi_note_freq(note: u8) -> f32 {
