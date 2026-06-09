@@ -24,9 +24,15 @@ with quality comparable to commercial physical-modeling instruments.
 ```sh
 # Build and render
 cargo build --release
-./target/release/piano-render note 60 96 -o /tmp/c4.wav --synth baseline
-./target/release/piano-render midi assets/midi/goldberg-aria.mid --synth baseline -o out/aria.wav
-./target/release/piano-render bench --synth baseline   # real-time factor
+./target/release/piano-render note 60 96 -o /tmp/c4.wav --synth modal-v2
+./target/release/piano-render midi assets/midi/goldberg-aria.mid --synth modal-v2 -o out/aria.wav
+./target/release/piano-render midi assets/midi/satie-gymnopedie1.mid --synth modal-v2 --auto-pedal -o out/satie.wav
+./target/release/piano-render bench --synth modal-v2   # real-time factor
+./target/release/piano-render sympathetic-demo -o /tmp/symp.wav --synth modal-v2
+
+# Play live (MIDI keyboard -> speakers; needs libasound2-dev to build)
+./target/release/piano-live --list      # show MIDI/audio devices
+./target/release/piano-live             # auto-pick MIDI input, ~3 ms buffer
 
 # Score against the Steinway reference grid (writes experiments/runs/*.json)
 cd scorer
@@ -34,7 +40,13 @@ uv run piano-score --synth baseline --quick   # 14 pairs, fast iteration
 uv run piano-score --synth baseline           # full 226-pair grid
 
 # Visual diagnostics: spectrogram / envelope / partials, synth vs reference
-uv run piano-plot --synth baseline --note 60 --layer FF -o /tmp/c4.png
+uv run piano-plot --synth modal-v2 --note 60 --layer FF -o /tmp/c4.png
+
+# Re-fit per-note parameters from the reference samples (data/calibration.json)
+uv run piano-calibrate
+
+# Hill-climb the synth's scalar knobs (PIANO_* env vars) on the quick score
+uv run piano-optimize
 ```
 
 ## The objective function
