@@ -34,7 +34,9 @@ from .sfz import load_reference_map
 # v6: layer_gains_db — each layer's median raw loudness relative to FF,
 # i.e. the measured dynamics curve of the real piano. Replaces the
 # synth's ad-hoc vel^1.6 loudness map.
-CALIBRATION_VERSION = 6
+# v7: attack_ms — onset-to-envelope-peak rise time. Instant-on partials
+# sound plucked; real hammered notes swell over 10-50 ms.
+CALIBRATION_VERSION = 7
 
 # The bed decays slowly; this assumed rate back-projects the late
 # measurement to t=0 and is what the synth plays it back with.
@@ -114,6 +116,15 @@ def _raw_loudness_db(raw, sr):
     return float(20 * np.log10(rms + 1e-9))
 
 
+def _attack_ms(audio, sr):
+    """Rise time from onset to the envelope peak, in ms."""
+    head = audio[: int(0.25 * sr)]
+    frame = int(0.002 * sr)
+    n = len(head) // frame
+    rms = np.sqrt(np.mean(head[: n * frame].reshape(n, frame) ** 2, axis=1))
+    return float(np.clip(np.argmax(rms) * 2.0, 2.0, 80.0))
+
+
 def calibrate_one(sample):
     raw = features.load_mono(sample.path)
     loudness_db = _raw_loudness_db(raw, features.SR)
@@ -147,6 +158,7 @@ def calibrate_one(sample):
         "bed_db": round(bed_db, 1),
         "bed_centroid_hz": round(bed_centroid, 0),
         "loudness_db": round(loudness_db, 2),  # made layer-relative below
+        "attack_ms": round(_attack_ms(audio, features.SR), 1),
         "amps_db": [round(float(v), 2) for v in amps],
         "decays_fast_db_s": [round(float(v), 2) for v in decays_fast],
         "decays_slow_db_s": [round(float(v), 2) for v in decays_slow],

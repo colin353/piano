@@ -23,6 +23,7 @@ struct RawNote {
     bed_db: f32,
     bed_centroid_hz: f32,
     loudness_db: f32,
+    attack_ms: f32,
     amps_db: Vec<f32>,
     decays_fast_db_s: Vec<f32>,
     decays_slow_db_s: Vec<f32>,
@@ -42,6 +43,8 @@ pub struct NoteParams {
     /// Early-RMS loudness of this note relative to its layer median, dB —
     /// the measured keyboard balance of the reference piano.
     pub loudness_db: f32,
+    /// Onset-to-peak rise time, ms. Instant attacks read as plucked.
+    pub attack_ms: f32,
     pub amps_db: [f32; N_SLOTS],
     pub decays_fast: [f32; N_SLOTS],
     pub decays_slow: [f32; N_SLOTS],
@@ -69,7 +72,7 @@ impl Calibration {
 
     pub fn parse(json: &str) -> Result<Calibration, Box<dyn std::error::Error>> {
         let raw: RawCalibration = serde_json::from_str(json)?;
-        assert_eq!(raw.version, 6, "unknown calibration version");
+        assert_eq!(raw.version, 7, "unknown calibration version");
         let mut layers: Vec<Layer> = raw
             .layers
             .into_values()
@@ -91,6 +94,7 @@ impl Calibration {
                                 bed_db: n.bed_db,
                                 bed_centroid_hz: n.bed_centroid_hz,
                                 loudness_db: n.loudness_db,
+                                attack_ms: n.attack_ms,
                                 amps_db: to_array(&n.amps_db),
                                 decays_fast: to_array(&n.decays_fast_db_s),
                                 decays_slow: to_array(&n.decays_slow_db_s),
@@ -151,6 +155,7 @@ fn clone_params(p: &NoteParams) -> NoteParams {
         bed_db: p.bed_db,
         bed_centroid_hz: p.bed_centroid_hz,
         loudness_db: p.loudness_db,
+        attack_ms: p.attack_ms,
         amps_db: p.amps_db,
         decays_fast: p.decays_fast,
         decays_slow: p.decays_slow,
@@ -173,6 +178,7 @@ fn lerp_params(a: &NoteParams, b: &NoteParams, w: f32) -> NoteParams {
         bed_db: a.bed_db + w * (b.bed_db - a.bed_db),
         bed_centroid_hz: a.bed_centroid_hz + w * (b.bed_centroid_hz - a.bed_centroid_hz),
         loudness_db: a.loudness_db + w * (b.loudness_db - a.loudness_db),
+        attack_ms: a.attack_ms + w * (b.attack_ms - a.attack_ms),
         amps_db: lerp_array(&a.amps_db, &b.amps_db),
         decays_fast: lerp_array(&a.decays_fast, &b.decays_fast),
         decays_slow: lerp_array(&a.decays_slow, &b.decays_slow),

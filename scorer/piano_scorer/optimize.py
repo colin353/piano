@@ -14,8 +14,9 @@ import subprocess
 
 KNOBS = {
     # name: (default, multiplicative step, hard bounds)
-    "PIANO_DETUNE_SCALE": (1.0, 1.35, (0.3, 3.0)),
-    "PIANO_BED_GAIN": (1.5, 1.35, (0.4, 4.0)),
+    "PIANO_DETUNE_SCALE": (1.35, 1.35, (0.3, 3.0)),
+    "PIANO_ATTACK_SCALE": (1.0, 1.3, (0.4, 2.5)),
+    "PIANO_BED_GAIN": (1.11, 1.35, (0.4, 4.0)),
     "PIANO_NOISE_GAIN": (1.0, 1.35, (0.2, 3.0)),
     "PIANO_SPLIT_MAX": (0.7, 1.2, (0.3, 0.95)),
     "PIANO_FAST_SCALE": (1.0, 1.25, (0.5, 2.0)),

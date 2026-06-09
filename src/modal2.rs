@@ -41,10 +41,14 @@ struct Voice {
     held: bool,
     pan_l: f32,
     pan_r: f32,
-    // Tonal attack ramp ~ hammer-string contact time (longer in the bass);
-    // resonators switching on instantly reads as a click.
-    attack_gain: f32,
-    attack_coeff: f32,
+    // Two-group attack swell from the measured rise time: the fundamental
+    // region (first 8 resonators = partials 1-4) swells at the fitted
+    // rate, upper partials arrive ~3x faster. Instant-on partials read
+    // as a plucked string, not a hammered one.
+    attack_slow: f32,
+    attack_slow_coeff: f32,
+    attack_fast: f32,
+    attack_fast_coeff: f32,
     // Hammer noise burst: filtered white noise with an exponential decay,
     // through a 2-pole lowpass (one pole leaves audible hiss — snare-like).
     noise_amp: f32,
@@ -330,6 +334,7 @@ impl StringBank {
 #[derive(Clone, Copy)]
 struct Knobs {
     detune_scale: f32,
+    attack_scale: f32,
     bed_gain: f32,
     noise_gain: f32,
     split_max: f32,
@@ -346,6 +351,7 @@ impl Knobs {
         };
         Knobs {
             detune_scale: get("PIANO_DETUNE_SCALE", 1.35),
+            attack_scale: get("PIANO_ATTACK_SCALE", 1.0),
             bed_gain: get("PIANO_BED_GAIN", 1.11),
             noise_gain: get("PIANO_NOISE_GAIN", 1.0),
             split_max: get("PIANO_SPLIT_MAX", 0.7),
@@ -476,10 +482,17 @@ impl Synth for ModalV2 {
             held: true,
             pan_l: angle.cos(),
             pan_r: angle.sin(),
-            attack_gain: 0.0,
-            attack_coeff: {
-                let contact = 0.0008 + 0.0035 * (1.0 - pos);
-                1.0 - (-1.0 / (contact * self.sample_rate)).exp()
+            attack_slow: 0.0,
+            attack_slow_coeff: {
+                // Linear ramp hitting 1.0 exactly at the fitted rise time.
+                let t = (params.attack_ms * self.knobs.attack_scale / 1000.0).clamp(0.002, 0.09);
+                1.0 / (t * self.sample_rate)
+            },
+            attack_fast: 0.0,
+            attack_fast_coeff: {
+                let t = (params.attack_ms * self.knobs.attack_scale / 1000.0).clamp(0.002, 0.09)
+                    / 3.0;
+                1.0 / (t * self.sample_rate)
             },
             noise_amp: target_rms * (0.12 + 0.30 * pos) * vel * self.knobs.noise_gain,
             noise_decay: decay_factor(60.0 / noise_seconds, self.sample_rate),
@@ -642,8 +655,10 @@ impl Synth for ModalV2 {
         right.fill(0.0);
         for voice in &mut self.voices {
             for i in 0..left.len() {
-                let mut acc = [0f32; LANES];
+                let mut sum_slow = 0.0f32;
+                let mut sum_fast = 0.0f32;
                 for chunk in (0..voice.n).step_by(LANES) {
+                    let mut acc = [0f32; LANES];
                     // Fixed-width branchless lane loop: autovectorizes.
                     for lane in 0..LANES {
                         let k = chunk + lane;
@@ -658,9 +673,16 @@ impl Synth for ModalV2 {
                         voice.re[k] = re;
                         acc[lane] += out;
                     }
+                    let chunk_sum: f32 = acc.iter().sum();
+                    if chunk == 0 {
+                        sum_slow += chunk_sum;
+                    } else {
+                        sum_fast += chunk_sum;
+                    }
                 }
-                voice.attack_gain += (1.0 - voice.attack_gain) * voice.attack_coeff;
-                let mut sum = acc.iter().sum::<f32>() * voice.attack_gain;
+                voice.attack_slow = (voice.attack_slow + voice.attack_slow_coeff).min(1.0);
+                voice.attack_fast = (voice.attack_fast + voice.attack_fast_coeff).min(1.0);
+                let mut sum = sum_slow * voice.attack_slow + sum_fast * voice.attack_fast;
                 if voice.noise_amp > 1e-7 || voice.bed_amp > 1e-7 {
                     // xorshift32 white noise, shared by burst and bed.
                     self.rng ^= self.rng << 13;
