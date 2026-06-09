@@ -27,7 +27,11 @@ from .sfz import load_reference_map
 # normalized) sample RMS. The scorer normalizes loudness per pair, so
 # nothing else constrains keyboard loudness balance — without this the
 # mid-range (many comparable partials + loud bed) plays far too loud.
-CALIBRATION_VERSION = 4
+# v5: amp tail slope clamped to [-8, -2.5] dB/partial (treble spectra fall
+# steeply for n=1-3 then plateau; extending the initial slope killed all
+# high partials), and every layer uses the FF-measured bed (PP beds are
+# inflated by mic noise — quiet source, fixed noise floor).
+CALIBRATION_VERSION = 5
 
 # The bed decays slowly; this assumed rate back-projects the late
 # measurement to t=0 and is what the synth plays it back with.
@@ -38,7 +42,8 @@ AMP_DB_FLOOR = -80.0
 DECAY_MIN, DECAY_MAX = 0.3, 300.0  # dB/s
 
 
-def _fill(values, valid, slope_window=6, clamp=None, max_tail_slope=None):
+def _fill(values, valid, slope_window=6, clamp=None, max_tail_slope=None,
+          min_tail_slope=None):
     """Densify a partial-indexed series: interpolate interior gaps and
     extrapolate the tail with the mean slope of the last valid points.
     `max_tail_slope` caps the extrapolation slope (e.g. forces amplitude to
@@ -59,6 +64,8 @@ def _fill(values, valid, slope_window=6, clamp=None, max_tail_slope=None):
     slope = (out[last] - out[lo]) / max(1, last - lo)
     if max_tail_slope is not None:
         slope = min(slope, max_tail_slope)
+    if min_tail_slope is not None:
+        slope = max(slope, min_tail_slope)
     for n in range(len(out), N_SLOTS):
         tail[n] = out[last] + slope * (n - last)
     tail[: idx[0]] = out[idx[0]]
@@ -114,7 +121,8 @@ def calibrate_one(sample):
 
     valid = np.isfinite(p.freqs)
     amps = _fill(np.where(valid, p.amps_db, 0), valid,
-                 clamp=(AMP_DB_FLOOR, 20), max_tail_slope=-2.5)
+                 clamp=(AMP_DB_FLOOR, 20), max_tail_slope=-2.5,
+                 min_tail_slope=-8.0)
 
     def fill_decay(series):
         ok = valid & np.isfinite(series)
@@ -179,6 +187,14 @@ def main():
             smooth[i] = np.median(loud[lo:hi])
         for r, v in zip(layer_rows, smooth):
             r["loudness_db"] = round(float(np.clip(v, -12, 12)), 2)
+    # Bed level/centroid: trust only the FF measurements (loudest source,
+    # best SNR); the bed scales with note loudness across layers anyway.
+    ff_rows = sorted(layers["FF"], key=lambda r: r["note"])
+    for layer_rows in layers.values():
+        for r in layer_rows:
+            nearest = min(ff_rows, key=lambda f: abs(f["note"] - r["note"]))
+            r["bed_db"] = nearest["bed_db"]
+            r["bed_centroid_hz"] = nearest["bed_centroid_hz"]
 
     out = {
         "version": CALIBRATION_VERSION,

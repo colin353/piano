@@ -231,7 +231,7 @@ impl StringBank {
                         continue;
                     }
                     let df = (bank_freqs[k] - freq).abs();
-                    if df < width * 8.0 {
+                    if df < width * 4.0 {
                         let kernel = 1.0 / (1.0 + (df / width) * (df / width));
                         bank.ping[played * BANK_RES + k] += amp * kernel / mf.sqrt();
                     }
