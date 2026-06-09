@@ -136,6 +136,8 @@ fn main() {
     const BLOCK: usize = 128;
     let mut left = [0f32; BLOCK];
     let mut right = [0f32; BLOCK];
+    let dry = args.iter().any(|a| a == "--dry");
+    let mut room = (!dry).then(|| piano::reverb::Reverb::new(sample_rate as f32, 1.8, 0.55));
 
     let stream = device
         .build_output_stream(
@@ -151,6 +153,9 @@ fn main() {
                 for frames in out.chunks_mut(BLOCK * channels) {
                     let n = frames.len() / channels;
                     synth.process(&mut left[..n], &mut right[..n]);
+                    if let Some(room) = room.as_mut() {
+                        room.process(&mut left[..n], &mut right[..n]);
+                    }
                     for (i, frame) in frames.chunks_mut(channels).enumerate() {
                         frame[0] = left[i];
                         if channels > 1 {

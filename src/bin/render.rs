@@ -84,6 +84,19 @@ fn main() {
             eprintln!("{} events over {:.1}s", events.len(),
                 events.last().map(|e| e.time).unwrap_or(0.0));
             let mut audio = render_events(synth.as_mut(), &events, sample_rate, 6.0);
+            // Room reverb by default (presentation only — scoring uses the
+            // dry `note` path); --dry disables.
+            if !args.iter().any(|a| a == "--dry") {
+                let mut room = piano::reverb::Reverb::new(sample_rate, 1.8, 0.55);
+                let n = audio.len() / 2;
+                let mut l: Vec<f32> = (0..n).map(|i| audio[2 * i]).collect();
+                let mut r: Vec<f32> = (0..n).map(|i| audio[2 * i + 1]).collect();
+                room.process(&mut l, &mut r);
+                for i in 0..n {
+                    audio[2 * i] = l[i];
+                    audio[2 * i + 1] = r[i];
+                }
+            }
             // Offline renders get peak normalization to -1 dBFS instead of
             // letting the WAV writer hard-clip loud passages.
             let peak = audio.iter().fold(0f32, |m, &s| m.max(s.abs()));
@@ -156,7 +169,7 @@ fn flag_value(args: &[String], flag: &str) -> Option<String> {
 /// Positional arguments after the subcommand (skipping flags; boolean
 /// flags take no value).
 fn positionals(args: &[String]) -> Vec<&String> {
-    const BOOLEAN_FLAGS: &[&str] = &["--auto-pedal"];
+    const BOOLEAN_FLAGS: &[&str] = &["--auto-pedal", "--dry"];
     let mut out = Vec::new();
     let mut i = 1;
     while i < args.len() {
