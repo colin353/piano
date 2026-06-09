@@ -25,8 +25,11 @@ with quality comparable to commercial physical-modeling instruments.
 # Build and render
 cargo build --release
 ./target/release/piano-render note 60 96 -o /tmp/c4.wav --synth modal-v2
-./target/release/piano-render midi assets/midi/goldberg-aria.mid --synth modal-v2 -o out/aria.wav
+./target/release/piano-render midi assets/midi/goldberg-aria.mid --synth modal-v2 --legato -o out/aria.wav
 ./target/release/piano-render midi assets/midi/satie-gymnopedie1.mid --synth modal-v2 --auto-pedal -o out/satie.wav
+#   --legato: overlap quantized typeset MIDI like human fingers would
+#   --auto-pedal: heuristic re-pedaling for MIDI without CC64
+#   --dry: disable the room reverb (scoring renders are always dry)
 ./target/release/piano-render bench --synth modal-v2   # real-time factor
 ./target/release/piano-render sympathetic-demo -o /tmp/symp.wav --synth modal-v2
 

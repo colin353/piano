@@ -15,8 +15,13 @@ Read README.md for layout and workflow. Rules that aren't obvious from it:
 - **Reference samples**: run `./fetch-reference.sh` if
   `assets/reference/SplendidGrandPiano` is missing. Note numbers come from
   `pitch_keycenter` in `Data/*.txt`, never from sample filenames.
-- **Score scale (v1)**: 0 = identical; ~0.7–2.3 = real adjacent dynamic
-  layers of the same note (practical noise floor); ~14 = sine baseline.
+- **Score scale (v3)**: 0 = identical; ~0.7–1.8 = real adjacent dynamic
+  layers of the same note (practical noise floor); ~13.8 = sine baseline;
+  modal-v2 sits at ~3.1 full-grid mean.
+- **Ear-features**: some realism features are score-invisible or carry a
+  small documented score cost (pitch glide, reverb, releases, pedaling).
+  Renders for humans use the room (`--legato`, `--auto-pedal` for typeset
+  MIDI); scoring renders stay dry by construction.
 - Use `piano-plot` to inspect synth-vs-reference spectrograms, envelopes,
   and partials when scores move in unexpected ways — read the PNG.
 - Python runs via `uv` from `scorer/` (`uv run piano-score ...`). The
