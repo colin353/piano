@@ -299,6 +299,36 @@ impl StringBank {
     }
 }
 
+/// Scalar tuning knobs. Defaults are the shipped values; each can be
+/// overridden via environment variable (PIANO_DETUNE_SCALE etc.) so the
+/// scoring harness can hill-climb them without rebuilding.
+#[derive(Clone, Copy)]
+struct Knobs {
+    detune_scale: f32,
+    bed_gain: f32,
+    noise_gain: f32,
+    split_max: f32,
+    fast_scale: f32,
+}
+
+impl Knobs {
+    fn from_env() -> Knobs {
+        let get = |name: &str, default: f32| {
+            std::env::var(name)
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(default)
+        };
+        Knobs {
+            detune_scale: get("PIANO_DETUNE_SCALE", 1.35),
+            bed_gain: get("PIANO_BED_GAIN", 1.11),
+            noise_gain: get("PIANO_NOISE_GAIN", 1.0),
+            split_max: get("PIANO_SPLIT_MAX", 0.7),
+            fast_scale: get("PIANO_FAST_SCALE", 1.0),
+        }
+    }
+}
+
 pub struct ModalV2 {
     sample_rate: f32,
     voices: Vec<Voice>,
@@ -309,6 +339,7 @@ pub struct ModalV2 {
     /// Bridge coupling into the bank and bank level back into the mix.
     bank_drive: f32,
     bank_level: f32,
+    knobs: Knobs,
 }
 
 impl ModalV2 {
@@ -322,6 +353,7 @@ impl ModalV2 {
             bank: StringBank::new(sample_rate),
             bank_drive: 0.012,
             bank_level: 1.0,
+            knobs: Knobs::from_env(),
         }
     }
 }
@@ -393,8 +425,9 @@ impl Synth for ModalV2 {
         // normalized to hit this exactly after the voice is built.
         let target_rms = 0.06 * vel.powf(1.6) * 10f32.powf(params.loudness_db / 20.0);
         let level = 1.0; // provisional partial scale, normalized below
-        let detune_ratio =
-            (unison_detune_cents(note) / 1200.0 * std::f32::consts::LN_2).exp_m1();
+        let detune_ratio = (unison_detune_cents(note) * self.knobs.detune_scale / 1200.0
+            * std::f32::consts::LN_2)
+            .exp_m1();
 
         let pos = (note as f32 - 21.0) / 87.0;
         let angle = (0.25 + 0.5 * pos) * std::f32::consts::FRAC_PI_2;
@@ -423,14 +456,14 @@ impl Synth for ModalV2 {
                 let contact = 0.0008 + 0.0035 * (1.0 - pos);
                 1.0 - (-1.0 / (contact * self.sample_rate)).exp()
             },
-            noise_amp: target_rms * (0.12 + 0.30 * pos) * vel,
+            noise_amp: target_rms * (0.12 + 0.30 * pos) * vel * self.knobs.noise_gain,
             noise_decay: decay_factor(60.0 / noise_seconds, self.sample_rate),
             noise_b: noise_filter.0,
             noise_a: noise_filter.1,
             noise_z: (0.0, 0.0),
             // bed_db was measured relative to the note's early RMS, which
             // is exactly target_rms after normalization.
-            bed_amp: target_rms * 10f32.powf(params.bed_db / 20.0) * 1.5,
+            bed_amp: target_rms * 10f32.powf(params.bed_db / 20.0) * self.knobs.bed_gain,
             bed_decay: decay_factor(BED_DECAY_DB_S, self.sample_rate),
             bed_b: biquad_lowpass(params.bed_centroid_hz, 1.2, self.sample_rate).0,
             bed_a: biquad_lowpass(params.bed_centroid_hz, 1.2, self.sample_rate).1,
@@ -461,9 +494,9 @@ impl Synth for ModalV2 {
                 0.0
             };
             let amp = level * 10f32.powf((params.amps_db[n - 1] + tilt_db) / 20.0);
-            let fast = params.decays_fast[n - 1].clamp(0.3, 300.0);
+            let fast = (params.decays_fast[n - 1] * self.knobs.fast_scale).clamp(0.3, 300.0);
             let slow = params.decays_slow[n - 1].clamp(0.3, fast);
-            let split = params.slow_split[n - 1].clamp(0.02, 0.7);
+            let split = params.slow_split[n - 1].clamp(0.02, self.knobs.split_max);
             if n <= UNISON_PARTIALS {
                 // Split the partial across two detuned strings using the
                 // fitted prompt-sound / aftersound rates: their sum

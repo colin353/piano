@@ -20,6 +20,7 @@ embed = ["torch>=2.2", "transformers>=4.40"]
 piano-score = "piano_scorer.score:main"
 piano-plot = "piano_scorer.plots:main"
 piano-calibrate = "piano_scorer.calibrate:main"
+piano-optimize = "piano_scorer.optimize:main"
 
 [build-system]
 requires = ["hatchling"]
