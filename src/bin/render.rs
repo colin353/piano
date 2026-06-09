@@ -55,8 +55,32 @@ fn main() {
             let [path] = positional[..] else {
                 usage();
             };
-            let events =
+            let mut events =
                 piano::events::load_midi(path.as_ref()).expect("failed to load midi file");
+            if args.iter().any(|a| a == "--auto-pedal")
+                && !events.iter().any(|e| matches!(e.kind, EventKind::Sustain { .. }))
+            {
+                // Typeset MIDI (Mutopia etc.) rarely carries CC64. Heuristic
+                // pedaling: re-pedal at every bass note onset.
+                let mut pedal = Vec::new();
+                for e in &events {
+                    if let EventKind::NoteOn { note, .. } = e.kind {
+                        if note < 48 {
+                            pedal.push(Event {
+                                time: (e.time - 0.02).max(0.0),
+                                kind: EventKind::Sustain { position: 0.0 },
+                            });
+                            pedal.push(Event {
+                                time: e.time + 0.02,
+                                kind: EventKind::Sustain { position: 1.0 },
+                            });
+                        }
+                    }
+                }
+                eprintln!("auto-pedal: {} re-pedal points", pedal.len() / 2);
+                events.extend(pedal);
+                events.sort_by(|a, b| a.time.total_cmp(&b.time));
+            }
             eprintln!("{} events over {:.1}s", events.len(),
                 events.last().map(|e| e.time).unwrap_or(0.0));
             let mut audio = render_events(synth.as_mut(), &events, sample_rate, 6.0);
@@ -72,6 +96,20 @@ fn main() {
                     *s *= gain.min(1.0);
                 }
             }
+            let out = out.unwrap_or_else(|| usage());
+            write_wav(&out, &audio, sample_rate as u32).expect("failed to write wav");
+            println!("wrote {}", out.display());
+        }
+        "sympathetic-demo" => {
+            // Hold C3 silently (string open, barely audible), strike C2
+            // staccato: C3's string should ring on after C2 is damped.
+            let events = vec![
+                Event { time: 0.0, kind: EventKind::NoteOn { note: 48, velocity: 1 } },
+                Event { time: 0.5, kind: EventKind::NoteOn { note: 36, velocity: 112 } },
+                Event { time: 0.8, kind: EventKind::NoteOff { note: 36 } },
+                Event { time: 6.0, kind: EventKind::NoteOff { note: 48 } },
+            ];
+            let audio = render_events(synth.as_mut(), &events, sample_rate, 1.0);
             let out = out.unwrap_or_else(|| usage());
             write_wav(&out, &audio, sample_rate as u32).expect("failed to write wav");
             println!("wrote {}", out.display());
@@ -115,12 +153,16 @@ fn flag_value(args: &[String], flag: &str) -> Option<String> {
         .and_then(|i| args.get(i + 1).cloned())
 }
 
-/// Positional arguments after the subcommand (skipping flag/value pairs).
+/// Positional arguments after the subcommand (skipping flags; boolean
+/// flags take no value).
 fn positionals(args: &[String]) -> Vec<&String> {
+    const BOOLEAN_FLAGS: &[&str] = &["--auto-pedal"];
     let mut out = Vec::new();
     let mut i = 1;
     while i < args.len() {
-        if args[i].starts_with('-') {
+        if BOOLEAN_FLAGS.contains(&args[i].as_str()) {
+            i += 1;
+        } else if args[i].starts_with('-') {
             i += 2;
         } else {
             out.push(&args[i]);

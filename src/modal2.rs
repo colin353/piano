@@ -116,11 +116,199 @@ impl Voice {
     }
 }
 
+/// Sympathetic resonance: every piano string shares the bridge, so any
+/// sounding note rings every *undamped* string — keys held down, pedal
+/// down, and everything above F#6 (no dampers). Modeled as a bank of
+/// 88 strings x 3 partials of resonators tuned from the calibration,
+/// driven by the voice mix, with per-string damper gating.
+const BANK_PARTIALS: usize = 3;
+const BANK_NOTES: usize = 88;
+const BANK_RES: usize = BANK_NOTES * BANK_PARTIALS; // multiple of LANES
+
+struct StringBank {
+    re: [f32; BANK_RES],
+    im: [f32; BANK_RES],
+    rot_re: [f32; BANK_RES],
+    rot_im: [f32; BANK_RES],
+    decay: [f32; BANK_RES],   // current per-resonator decay (open or damped)
+    open_decay: [f32; BANK_RES],
+    damped_decay: [f32; BANK_RES],
+    gain_in: [f32; BANK_RES],
+    pan_l: [f32; BANK_RES],
+    pan_r: [f32; BANK_RES],
+    open: [bool; BANK_NOTES],
+    /// ping[played_note_index][resonator]: how strongly a note-on of
+    /// `played_note` rings each string partial — partial amplitudes of the
+    /// played note times a frequency-proximity kernel. Gives the instant
+    /// sympathetic ping that slow driven buildup cannot.
+    ping: Vec<f32>,
+}
+
+impl StringBank {
+    fn new(sample_rate: f32) -> Box<StringBank> {
+        let cal = Calibration::embedded();
+        let mut bank = Box::new(StringBank {
+            re: [0.0; BANK_RES],
+            im: [0.0; BANK_RES],
+            rot_re: [1.0; BANK_RES],
+            rot_im: [0.0; BANK_RES],
+            decay: [0.0; BANK_RES],
+            open_decay: [0.0; BANK_RES],
+            damped_decay: [0.0; BANK_RES],
+            gain_in: [0.0; BANK_RES],
+            pan_l: [0.0; BANK_RES],
+            pan_r: [0.0; BANK_RES],
+            open: [false; BANK_NOTES],
+            ping: vec![0.0; BANK_NOTES * BANK_RES],
+        });
+        let nyquist = sample_rate * 0.5 * 0.95;
+        for string in 0..BANK_NOTES {
+            let note = 21 + string as u8;
+            let params = cal.lookup(note, 100);
+            let f0 = midi_note_freq(note) * 2f32.powf(params.f0_cents / 1200.0);
+            let pos = string as f32 / 87.0;
+            let angle = (0.25 + 0.5 * pos) * std::f32::consts::FRAC_PI_2;
+            for p in 0..BANK_PARTIALS {
+                let k = string * BANK_PARTIALS + p;
+                let nf = (p + 1) as f32;
+                let freq = nf * f0 * (1.0 + params.b * nf * nf).sqrt();
+                if freq >= nyquist {
+                    continue; // stays a dead resonator (gain 0, decay 0)
+                }
+                let w = std::f32::consts::TAU * freq / sample_rate;
+                bank.rot_re[k] = w.cos();
+                bank.rot_im[k] = w.sin();
+                // Sympathetic ring decays like the string's aftersound.
+                let ring = params.decays_slow[p].clamp(1.0, 30.0);
+                bank.open_decay[k] = decay_factor(ring, sample_rate);
+                bank.damped_decay[k] = damper_factor(note, sample_rate)
+                    .min(decay_factor(ring, sample_rate));
+                bank.decay[k] = bank.damped_decay[k];
+                // Lower partials couple more strongly through the bridge.
+                // The (1 - decay) factor normalizes resonant buildup: a
+                // driven resonator accumulates ~ gain/(1-decay) at its own
+                // frequency, which is ~1e5 for slow-ringing strings. The
+                // leading constant is the bridge coupling strength, set so
+                // a staccato strike leaves an audible ring in matched
+                // open strings (one-way drive can't get both transient and
+                // steady-state coupling from first principles).
+                bank.gain_in[k] = 8.0 * (1.0 - bank.open_decay[k]) / nf;
+                bank.pan_l[k] = angle.cos();
+                bank.pan_r[k] = angle.sin();
+            }
+            if note >= 90 {
+                // No dampers up here: always open.
+                bank.open[string] = true;
+                for p in 0..BANK_PARTIALS {
+                    let k = string * BANK_PARTIALS + p;
+                    bank.decay[k] = bank.open_decay[k];
+                    bank.damped_decay[k] = bank.open_decay[k];
+                }
+            }
+        }
+
+        // Coupling table: for every (played note, string partial) pair.
+        let mut bank_freqs = [0f32; BANK_RES];
+        for k in 0..BANK_RES {
+            // Recover the resonator frequency from its rotation.
+            bank_freqs[k] =
+                bank.rot_im[k].atan2(bank.rot_re[k]) * sample_rate / std::f32::consts::TAU;
+        }
+        for played in 0..BANK_NOTES {
+            let note = 21 + played as u8;
+            let params = cal.lookup(note, 100);
+            let f0 = midi_note_freq(note) * 2f32.powf(params.f0_cents / 1200.0);
+            for m in 1..=16usize {
+                let mf = m as f32;
+                let freq = mf * f0 * (1.0 + params.b * mf * mf).sqrt();
+                if freq >= nyquist {
+                    break;
+                }
+                let amp = 10f32.powf(params.amps_db[m - 1].clamp(-40.0, 6.0) / 20.0);
+                let width = 1.5 + 0.004 * freq; // Hz, ~string bandwidth
+                for k in 0..BANK_RES {
+                    if bank.gain_in[k] == 0.0 {
+                        continue;
+                    }
+                    let df = (bank_freqs[k] - freq).abs();
+                    if df < width * 8.0 {
+                        let kernel = 1.0 / (1.0 + (df / width) * (df / width));
+                        bank.ping[played * BANK_RES + k] += amp * kernel / mf.sqrt();
+                    }
+                }
+            }
+        }
+        bank
+    }
+
+    /// Ring all open strings (except the played one) at note-on.
+    fn ping(&mut self, note: u8, strength: f32, rng: &mut u32) {
+        if !(21..21 + BANK_NOTES as u8).contains(&note) {
+            return;
+        }
+        let played = (note - 21) as usize;
+        for k in 0..BANK_RES {
+            if !self.open[k / BANK_PARTIALS] || k / BANK_PARTIALS == played {
+                continue;
+            }
+            let c = self.ping[played * BANK_RES + k];
+            if c <= 1e-4 {
+                continue;
+            }
+            *rng ^= *rng << 13;
+            *rng ^= *rng >> 17;
+            *rng ^= *rng << 5;
+            let phase = (*rng as f32 / u32::MAX as f32) * std::f32::consts::TAU;
+            self.re[k] += strength * c * phase.cos();
+            self.im[k] += strength * c * phase.sin();
+        }
+    }
+
+    fn set_open(&mut self, note: u8, open: bool) {
+        if !(21..21 + BANK_NOTES as u8).contains(&note) {
+            return;
+        }
+        let string = (note - 21) as usize;
+        self.open[string] = open || note >= 90;
+        for p in 0..BANK_PARTIALS {
+            let k = string * BANK_PARTIALS + p;
+            self.decay[k] = if open { self.open_decay[k] } else { self.damped_decay[k] };
+        }
+    }
+
+    /// Advance one sample: excite with the bridge signal, return (l, r).
+    #[inline]
+    fn step(&mut self, drive: f32) -> (f32, f32) {
+        let mut acc_l = [0f32; LANES];
+        let mut acc_r = [0f32; LANES];
+        for chunk in (0..BANK_RES).step_by(LANES) {
+            for lane in 0..LANES {
+                let k = chunk + lane;
+                let out = self.im[k];
+                let re = (self.re[k] * self.rot_re[k] - self.im[k] * self.rot_im[k])
+                    * self.decay[k]
+                    + drive * self.gain_in[k];
+                self.im[k] =
+                    (self.re[k] * self.rot_im[k] + self.im[k] * self.rot_re[k]) * self.decay[k];
+                self.re[k] = re;
+                acc_l[lane] += out * self.pan_l[k];
+                acc_r[lane] += out * self.pan_r[k];
+            }
+        }
+        (acc_l.iter().sum(), acc_r.iter().sum())
+    }
+}
+
 pub struct ModalV2 {
     sample_rate: f32,
     voices: Vec<Voice>,
     sustain: bool,
     rng: u32,
+    held: [bool; 128],
+    bank: Box<StringBank>,
+    /// Bridge coupling into the bank and bank level back into the mix.
+    bank_drive: f32,
+    bank_level: f32,
 }
 
 impl ModalV2 {
@@ -130,6 +318,10 @@ impl ModalV2 {
             voices: Vec::with_capacity(MAX_VOICES),
             sustain: false,
             rng: 0x12345678,
+            held: [false; 128],
+            bank: StringBank::new(sample_rate),
+            bank_drive: 0.012,
+            bank_level: 1.0,
         }
     }
 }
@@ -298,9 +490,15 @@ impl Synth for ModalV2 {
         self.voices.push(voice);
         // Advance the synth RNG so consecutive notes get fresh phases.
         self.rng = self.rng.wrapping_mul(0x9E3779B9).wrapping_add(1);
+        self.held[note as usize] = true;
+        let mut rng = self.rng;
+        self.bank.ping(note, target_rms * 0.08, &mut rng);
+        self.rng = rng;
+        self.bank.set_open(note, true);
     }
 
     fn note_off(&mut self, note: u8) {
+        self.held[note as usize] = false;
         for v in &mut self.voices {
             if v.note == note && v.held {
                 v.held = false;
@@ -308,6 +506,9 @@ impl Synth for ModalV2 {
                     v.damping = damper_factor(v.note, self.sample_rate);
                 }
             }
+        }
+        if !self.sustain {
+            self.bank.set_open(note, false);
         }
     }
 
@@ -322,6 +523,13 @@ impl Synth for ModalV2 {
                     } else {
                         damper_factor(v.note, self.sample_rate)
                     };
+                }
+            }
+            for note in 21..21 + BANK_NOTES as u8 {
+                if down {
+                    self.bank.set_open(note, true);
+                } else if !self.held[note as usize] {
+                    self.bank.set_open(note, false);
                 }
             }
         }
@@ -381,6 +589,14 @@ impl Synth for ModalV2 {
                 right[i] += sum * voice.pan_r;
             }
             voice.compact();
+        }
+        // Sympathetic bank: driven by the voice mix (no feedback — the
+        // bank does not hear itself).
+        for i in 0..left.len() {
+            let drive = (left[i] + right[i]) * self.bank_drive;
+            let (bl, br) = self.bank.step(drive);
+            left[i] += bl * self.bank_level;
+            right[i] += br * self.bank_level;
         }
         self.voices.retain(|v| v.energy() > 1e-12);
     }
