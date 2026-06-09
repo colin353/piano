@@ -26,7 +26,11 @@ pub trait Synth: Send {
     fn note_off(&mut self, note: u8);
 
     /// Sustain (damper) pedal position, 0.0 = up, 1.0 = fully down.
+    /// Implementations should support half-pedaling (continuous values).
     fn set_sustain(&mut self, position: f32);
+
+    /// Other controllers (e.g. CC67 una corda). Default: ignored.
+    fn set_control(&mut self, _controller: u8, _value: f32) {}
 
     /// Generate the next `left.len()` samples of stereo audio, overwriting
     /// the buffers. Both slices are the same length.

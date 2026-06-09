@@ -7,6 +7,7 @@ pub enum EventKind {
     NoteOn { note: u8, velocity: u8 },
     NoteOff { note: u8 },
     Sustain { position: f32 },
+    Control { controller: u8, value: f32 },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -112,6 +113,12 @@ fn midi_message_to_event(message: midly::MidiMessage) -> Option<EventKind> {
         midly::MidiMessage::Controller { controller, value } if controller.as_int() == 64 => {
             Some(EventKind::Sustain {
                 position: value.as_int() as f32 / 127.0,
+            })
+        }
+        midly::MidiMessage::Controller { controller, value } if controller.as_int() == 67 => {
+            Some(EventKind::Control {
+                controller: 67,
+                value: value.as_int() as f32 / 127.0,
             })
         }
         _ => None,

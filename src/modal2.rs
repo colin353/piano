@@ -128,9 +128,10 @@ impl Voice {
     }
 
     /// Apply (or lift) the damper. Felt absorption rises with frequency:
-    /// stop time = base(register) * 600 / (600 + f).
-    fn set_damper(&mut self, on: bool, note: u8, sr: f32) {
-        if !on {
+    /// stop time = base(register) * 600 / (600 + f). `pressure` 0..1
+    /// scales the damping rate for half-pedaling (0 = damper lifted).
+    fn set_damper(&mut self, on: bool, note: u8, sr: f32, pressure: f32) {
+        if !on || pressure <= 0.02 {
             self.damping[..self.n].fill(1.0);
             return;
         }
@@ -142,7 +143,8 @@ impl Voice {
             }
             let freq = self.rot_im[k].atan2(self.rot_re[k]) * sr / std::f32::consts::TAU;
             let stop = base * 600.0 / (600.0 + freq.max(0.0));
-            self.damping[k] = decay_factor(60.0 / stop.max(0.015), sr);
+            let rate = 60.0 / stop.max(0.015) * pressure * pressure;
+            self.damping[k] = decay_factor(rate, sr);
         }
     }
 
@@ -376,6 +378,10 @@ pub struct ModalV2 {
     sample_rate: f32,
     voices: Vec<Voice>,
     sustain: bool,
+    /// Continuous CC64 position for half-pedaling.
+    sustain_pos: f32,
+    /// CC67 una corda: hammers shifted, striking fewer strings softly.
+    una_corda: bool,
     rng: u32,
     held: [bool; 128],
     bank: Box<StringBank>,
@@ -391,6 +397,8 @@ impl ModalV2 {
             sample_rate,
             voices: Vec::with_capacity(MAX_VOICES),
             sustain: false,
+            sustain_pos: 0.0,
+            una_corda: false,
             rng: 0x12345678,
             held: [false; 128],
             bank: StringBank::new(sample_rate),
@@ -451,7 +459,7 @@ impl Synth for ModalV2 {
         for v in &mut self.voices {
             if v.note == note {
                 v.held = false;
-                v.set_damper(true, note, sr);
+                v.set_damper(true, note, sr, 1.0);
             }
         }
         if self.voices.len() == self.voices.capacity() {
@@ -459,6 +467,10 @@ impl Synth for ModalV2 {
                 self.voices.swap_remove(idx);
             }
         }
+        // Una corda: the shifted hammer strikes fewer strings on softer
+        // felt — quieter, darker, and more energy in the freely-resonating
+        // aftersound.
+        let una = self.una_corda;
         let params = Calibration::embedded().lookup(note, velocity);
         let vel = velocity as f32 / 127.0;
         let f0 = midi_note_freq(note) * 2f32.powf(params.f0_cents / 1200.0);
@@ -466,7 +478,10 @@ impl Synth for ModalV2 {
         // Target early RMS: global gain x velocity curve x the measured
         // keyboard balance of the reference piano. Partial amplitudes are
         // normalized to hit this exactly after the voice is built.
-        let target_rms = 0.06 * vel.powf(1.6) * 10f32.powf(params.loudness_db / 20.0);
+        let mut target_rms = 0.06 * vel.powf(1.6) * 10f32.powf(params.loudness_db / 20.0);
+        if una {
+            target_rms *= 0.65;
+        }
         let level = 1.0; // provisional partial scale, normalized below
         let detune_ratio = (unison_detune_cents(note) * self.knobs.detune_scale / 1200.0
             * std::f32::consts::LN_2)
@@ -549,10 +564,14 @@ impl Synth for ModalV2 {
             } else {
                 0.0
             };
-            let amp = level * 10f32.powf((params.amps_db[n - 1] + tilt_db) / 20.0);
+            let una_tilt = if una { -0.35 * (nf - 1.0) } else { 0.0 };
+            let amp = level * 10f32.powf((params.amps_db[n - 1] + tilt_db + una_tilt) / 20.0);
             let fast = (params.decays_fast[n - 1] * self.knobs.fast_scale).clamp(0.3, 300.0);
             let slow = params.decays_slow[n - 1].clamp(0.3, fast);
-            let split = params.slow_split[n - 1].clamp(0.02, self.knobs.split_max);
+            let mut split = params.slow_split[n - 1].clamp(0.02, self.knobs.split_max);
+            if una {
+                split = (split * 1.6).min(0.9);
+            }
             if n <= UNISON_PARTIALS {
                 // Split the partial across two detuned strings using the
                 // fitted prompt-sound / aftersound rates: their sum
@@ -612,8 +631,10 @@ impl Synth for ModalV2 {
         for v in &mut self.voices {
             if v.note == note && v.held {
                 v.held = false;
-                if !self.sustain {
-                    v.set_damper(true, note, sr);
+                // Damper pressure follows the (possibly partial) pedal.
+                let pressure = 1.0 - self.sustain_pos;
+                v.set_damper(true, note, sr, pressure);
+                if pressure > 0.4 {
                     // The soundboard keeps ringing briefly after the string
                     // is damped; release the bed on its own ~0.3 s slope
                     // instead of cutting it with the string.
@@ -643,21 +664,23 @@ impl Synth for ModalV2 {
     }
 
     fn set_sustain(&mut self, position: f32) {
+        self.sustain_pos = position;
         let down = position >= 0.5;
+        let sr = self.sample_rate;
+        // Half-pedal: continuously rescale damping on released voices.
+        for v in &mut self.voices {
+            if !v.held {
+                let note = v.note;
+                v.set_damper(true, note, sr, 1.0 - position);
+                v.bed_decay = if down {
+                    decay_factor(BED_DECAY_DB_S, sr)
+                } else {
+                    decay_factor(60.0 / 0.3, sr)
+                };
+            }
+        }
         if down != self.sustain {
             self.sustain = down;
-            let sr = self.sample_rate;
-            for v in &mut self.voices {
-                if !v.held {
-                    let note = v.note;
-                    v.set_damper(!down, note, sr);
-                    v.bed_decay = if down {
-                        decay_factor(BED_DECAY_DB_S, sr)
-                    } else {
-                        decay_factor(60.0 / 0.3, sr)
-                    };
-                }
-            }
             for note in 21..21 + BANK_NOTES as u8 {
                 if down {
                     self.bank.set_open(note, true);
@@ -665,6 +688,12 @@ impl Synth for ModalV2 {
                     self.bank.set_open(note, false);
                 }
             }
+        }
+    }
+
+    fn set_control(&mut self, controller: u8, value: f32) {
+        if controller == 67 {
+            self.una_corda = value >= 0.5;
         }
     }
 

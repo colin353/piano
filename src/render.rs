@@ -37,6 +37,7 @@ pub fn render_events(
                 EventKind::NoteOn { note, velocity } => synth.note_on(note, velocity),
                 EventKind::NoteOff { note } => synth.note_off(note),
                 EventKind::Sustain { position } => synth.set_sustain(position),
+                EventKind::Control { controller, value } => synth.set_control(controller, value),
             }
             event_idx += 1;
         }

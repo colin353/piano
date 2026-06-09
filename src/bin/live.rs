@@ -14,6 +14,7 @@ enum MidiEvent {
     NoteOn { note: u8, velocity: u8 },
     NoteOff { note: u8 },
     Sustain { position: f32 },
+    Control { controller: u8, value: f32 },
 }
 
 fn main() {
@@ -116,6 +117,12 @@ fn main() {
                                         position: *value as f32 / 127.0,
                                     })
                                 }
+                                [s, cc, value] if s & 0xF0 == 0xB0 => {
+                                    Some(MidiEvent::Control {
+                                        controller: *cc,
+                                        value: *value as f32 / 127.0,
+                                    })
+                                }
                                 _ => None,
                             };
                             if let Some(e) = event {
@@ -148,6 +155,9 @@ fn main() {
                         MidiEvent::NoteOn { note, velocity } => synth.note_on(note, velocity),
                         MidiEvent::NoteOff { note } => synth.note_off(note),
                         MidiEvent::Sustain { position } => synth.set_sustain(position),
+                        MidiEvent::Control { controller, value } => {
+                            synth.set_control(controller, value)
+                        }
                     }
                 }
                 for frames in out.chunks_mut(BLOCK * channels) {
