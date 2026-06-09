@@ -1,0 +1,224 @@
+{
+ "timestamp": "2026-06-09T18:10:38+00:00",
+ "scorer_version": 1,
+ "synth": "modal-v1",
+ "label": "",
+ "git_rev": "bef4eb8",
+ "quick": true,
+ "n_samples": 14,
+ "loss_mean": 6.201593846872423,
+ "loss_median": 5.201226748806666,
+ "loss_worst": 12.114822904456567,
+ "components_mean": {
+  "mel": 1.6169247111498102,
+  "envelope": 0.665536128623145,
+  "f0_cents": 0.5497468117863435,
+  "partial_freq": 1.0503752487942466,
+  "partial_amps": 1.536387338761298,
+  "partial_decay": 1.0574970136507509
+ },
+ "by_register": {
+  "bass": 6.409810005531257,
+  "mid": 2.8698679807240017,
+  "treble": 8.28393365186548
+ },
+ "elapsed_s": 5.1,
+ "pairs": [
+  {
+   "note": 23,
+   "layer": "FF",
+   "velocity": 114,
+   "loss": 9.843881279158975,
+   "components": {
+    "mel": 1.9960574794817256,
+    "envelope": 0.2560879707336426,
+    "f0_cents": 4.0,
+    "partial_freq": 3.410827392463353,
+    "partial_amps": 2.0464086452754056,
+    "partial_decay": 0.1344997912048475
+   }
+  },
+  {
+   "note": 23,
+   "layer": "PP",
+   "velocity": 54,
+   "loss": 5.442311671883643,
+   "components": {
+    "mel": 1.7186259692311376,
+    "envelope": 0.188859224319458,
+    "f0_cents": 0.15300486443406683,
+    "partial_freq": 0.2903739347121187,
+    "partial_amps": 3.012032094168909,
+    "partial_decay": 0.15591801723498547
+   }
+  },
+  {
+   "note": 35,
+   "layer": "FF",
+   "velocity": 114,
+   "loss": 5.059009401280093,
+   "components": {
+    "mel": 2.2098814206487343,
+    "envelope": 0.3436430931091309,
+    "f0_cents": 0.4007786103720072,
+    "partial_freq": 0.21018348090999203,
+    "partial_amps": 1.959188943926436,
+    "partial_decay": 0.13572315749979655
+   }
+  },
+  {
+   "note": 35,
+   "layer": "PP",
+   "velocity": 54,
+   "loss": 5.294037669802314,
+   "components": {
+    "mel": 1.804967098205517,
+    "envelope": 0.3188387632369995,
+    "f0_cents": 0.42798711976080517,
+    "partial_freq": 0.2576848890442246,
+    "partial_amps": 2.5763102787699146,
+    "partial_decay": 0.12224308066525624
+   }
+  },
+  {
+   "note": 48,
+   "layer": "FF",
+   "velocity": 114,
+   "loss": 2.905076994467877,
+   "components": {
+    "mel": 1.4380638867154654,
+    "envelope": 0.2260305643081665,
+    "f0_cents": 0.15781656690058857,
+    "partial_freq": 0.12871346415074647,
+    "partial_amps": 0.7294854846376763,
+    "partial_decay": 0.30387531120552824
+   }
+  },
+  {
+   "note": 48,
+   "layer": "PP",
+   "velocity": 54,
+   "loss": 2.509437441295911,
+   "components": {
+    "mel": 1.0227128071839593,
+    "envelope": 0.17121132612228393,
+    "f0_cents": 0.15930997399310873,
+    "partial_freq": 0.13050508386255616,
+    "partial_amps": 0.8122941060222214,
+    "partial_decay": 0.2930591311083363
+   }
+  },
+  {
+   "note": 60,
+   "layer": "FF",
+   "velocity": 114,
+   "loss": 3.106713241326646,
+   "components": {
+    "mel": 0.9726481293517293,
+    "envelope": 0.23108468055725098,
+    "f0_cents": 0.24201289976415524,
+    "partial_freq": 0.16060484196269498,
+    "partial_amps": 1.059071926454753,
+    "partial_decay": 0.5622972131181402
+   }
+  },
+  {
+   "note": 60,
+   "layer": "PP",
+   "velocity": 54,
+   "loss": 2.9582442458055738,
+   "components": {
+    "mel": 0.9165162395884273,
+    "envelope": 0.2783356666564941,
+    "f0_cents": 0.012603132532393932,
+    "partial_freq": 0.12117416169028715,
+    "partial_amps": 0.9833971959424498,
+    "partial_decay": 0.6525194156617187
+   }
+  },
+  {
+   "note": 72,
+   "layer": "FF",
+   "velocity": 114,
+   "loss": 4.443598557550441,
+   "components": {
+    "mel": 0.8532925994869668,
+    "envelope": 0.502689790725708,
+    "f0_cents": 0.16440128700157097,
+    "partial_freq": 0.9393489200690491,
+    "partial_amps": 1.0373658360237699,
+    "partial_decay": 1.028700767744162
+   }
+  },
+  {
+   "note": 72,
+   "layer": "PP",
+   "velocity": 54,
+   "loss": 5.108415827811017,
+   "components": {
+    "mel": 1.067274116953912,
+    "envelope": 0.5125691890716553,
+    "f0_cents": 0.11782802134583821,
+    "partial_freq": 0.4261961377710549,
+    "partial_amps": 1.3026857222340371,
+    "partial_decay": 1.7407766511074385
+   }
+  },
+  {
+   "note": 83,
+   "layer": "FF",
+   "velocity": 114,
+   "loss": 8.034282927136559,
+   "components": {
+    "mel": 1.2354047897259945,
+    "envelope": 1.2503094673156738,
+    "f0_cents": 0.17877391591076197,
+    "partial_freq": 1.795823992246993,
+    "partial_amps": 1.6408551276351755,
+    "partial_decay": 2.0225025922573403
+   }
+  },
+  {
+   "note": 83,
+   "layer": "PP",
+   "velocity": 54,
+   "loss": 8.125170924724014,
+   "components": {
+    "mel": 1.1236634348818202,
+    "envelope": 0.375714373588562,
+    "f0_cents": 0.19719962372873426,
+    "partial_freq": 2.2516729959413966,
+    "partial_amps": 1.8195852473614507,
+    "partial_decay": 2.455935061086417
+   }
+  },
+  {
+   "note": 96,
+   "layer": "FF",
+   "velocity": 114,
+   "loss": 11.877310769514281,
+   "components": {
+    "mel": 3.0945805678372516,
+    "envelope": 2.1344186782836916,
+    "f0_cents": 0.7358667193903139,
+    "partial_freq": 2.368352447810953,
+    "partial_amps": 1.256585697188229,
+    "partial_decay": 2.655440018699
+   }
+  },
+  {
+   "note": 96,
+   "layer": "PP",
+   "velocity": 54,
+   "loss": 12.114822904456567,
+   "components": {
+    "mel": 3.1832574168047016,
+    "envelope": 2.5277130126953127,
+    "f0_cents": 0.7488726298744637,
+    "partial_freq": 2.2137917404840324,
+    "partial_amps": 1.2741564370177427,
+    "partial_decay": 2.5414679825175464
+   }
+  }
+ ]
+}
