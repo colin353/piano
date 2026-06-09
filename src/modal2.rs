@@ -369,6 +369,16 @@ fn damper_factor(note: u8, sample_rate: f32) -> f32 {
 
 impl Synth for ModalV2 {
     fn note_on(&mut self, note: u8, velocity: u8) {
+        // Re-strike: the hammer re-contact largely replaces the previous
+        // vibration of this string; letting the old voice ring unattenuated
+        // alongside the new one piles up energy in fast repeated notes.
+        for v in &mut self.voices {
+            if v.note == note {
+                v.held = false;
+                v.damping = damper_factor(note, self.sample_rate)
+                    .min(decay_factor(120.0, self.sample_rate));
+            }
+        }
         if self.voices.len() == self.voices.capacity() {
             if let Some(idx) = quietest(&self.voices) {
                 self.voices.swap_remove(idx);
@@ -504,6 +514,23 @@ impl Synth for ModalV2 {
                 v.held = false;
                 if !self.sustain {
                     v.damping = damper_factor(v.note, self.sample_rate);
+                    // Damper thud: a dark noise burst scaled by how much
+                    // the string was still vibrating, with a faint
+                    // mechanical floor (the key/damper always clunks a
+                    // little, even on a silent string). Dampers don't
+                    // exist above F#6.
+                    if v.note < 90 {
+                        // The 420 Hz lowpass discards most broadband noise
+                        // energy; the leading constant compensates.
+                        let ringing =
+                            (v.energy() / 2.0).sqrt() * 1.5 + 0.002;
+                        v.noise_amp = v.noise_amp.max(ringing);
+                        v.noise_decay =
+                            decay_factor(60.0 / 0.045, self.sample_rate);
+                        let f = biquad_lowpass(420.0, 0.8, self.sample_rate);
+                        v.noise_b = f.0;
+                        v.noise_a = f.1;
+                    }
                 }
             }
         }
