@@ -25,7 +25,10 @@ from .sfz import load_reference_map
 
 # v2: longer analysis windows for bass, peak quality gate in the partial
 # tracker. Not comparable with v1 numbers.
-SCORER_VERSION = 2
+# v3: partial_freq only counts reference partials above -60 dB rel the
+# fundamental (below that, treble-layer "partials" are mic noise and
+# their absence in the synth is not a defect).
+SCORER_VERSION = 3
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REFERENCE_REPO = REPO_ROOT / "assets" / "reference" / "SplendidGrandPiano"

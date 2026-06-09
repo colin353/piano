@@ -225,14 +225,19 @@ def partial_distance(ref: PartialSet, syn: PartialSet):
     cents = 1200 * np.abs(np.log2((syn.f0 + 1e-9) / (ref.f0 + 1e-9)))
     comps["f0_cents"] = min(cents, 100) / 25.0
 
-    both = np.isfinite(ref.freqs) & np.isfinite(syn.freqs)
-    ref_only = np.isfinite(ref.freqs) & ~np.isfinite(syn.freqs)
+    # Only partials with meaningful reference amplitude participate:
+    # peaks below -60 dB rel. partial 1 are routinely mic-noise artifacts
+    # (treble PP/MF layers) and punishing their absence is metric noise.
+    audible = np.isfinite(ref.freqs) & (ref.amps_db > -60.0)
+    both = audible & np.isfinite(syn.freqs)
+    ref_only = audible & ~np.isfinite(syn.freqs)
     if both.sum() >= 2:
         dev = 1200 * np.abs(np.log2(syn.freqs[both] / ref.freqs[both]))
         freq_term = np.mean(np.minimum(dev, 100)) / 25.0
     else:
         freq_term = 2.0
-    comps["partial_freq"] = freq_term + 2.0 * ref_only.sum() / len(ref.freqs)
+    n_audible = max(1, int(audible.sum()))
+    comps["partial_freq"] = freq_term + 2.0 * ref_only.sum() / n_audible
 
     # Amplitude profile: 1.0 ~= 12 dB mean deviation. Missing partials in
     # the synth show up as huge negative dB and are penalized naturally.
