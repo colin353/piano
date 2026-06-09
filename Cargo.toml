@@ -1,0 +1,16 @@
+[package]
+name = "piano"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+hound = "3.5"
+midly = "0.5"
+
+[profile.release]
+lto = true
+codegen-units = 1
+
+[[bin]]
+name = "piano-render"
+path = "src/bin/render.rs"

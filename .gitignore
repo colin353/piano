@@ -1,0 +1,6 @@
+/target
+/out
+/assets/reference/
+scorer/.venv/
+__pycache__/
+*.egg-info/
