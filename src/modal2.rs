@@ -33,6 +33,8 @@ struct Voice {
     rot_re: [f32; MAX_RES],
     rot_im: [f32; MAX_RES],
     decay: [f32; MAX_RES],
+    /// Base angular step per resonator, for the attack pitch glide.
+    base_w: [f32; MAX_RES],
     /// Per-resonator damper factor (1.0 = open). Frequency-dependent: the
     /// damper felt kills high partials almost instantly while the
     /// fundamental of low notes audibly rings through it — a uniform cut
@@ -49,6 +51,10 @@ struct Voice {
     attack_slow_coeff: f32,
     attack_fast: f32,
     attack_fast_coeff: f32,
+    /// Attack pitch glide: a hard-struck string is momentarily sharp
+    /// (tension modulation) and settles over ~100 ms. Current sharpness
+    /// in cents; rotations are refreshed per block while it rings down.
+    glide_cents: f32,
     // Hammer noise burst: filtered white noise with an exponential decay,
     // through a 2-pole lowpass (one pole leaves audible hiss — snare-like).
     noise_amp: f32,
@@ -80,6 +86,7 @@ impl Voice {
         self.im[k] = amp * phase.sin();
         self.rot_re[k] = w.cos();
         self.rot_im[k] = w.sin();
+        self.base_w[k] = w;
         self.decay[k] = decay_factor(decay_db_s, sr);
         self.n += 1;
     }
@@ -94,6 +101,7 @@ impl Voice {
                     self.im[keep] = self.im[k];
                     self.rot_re[keep] = self.rot_re[k];
                     self.rot_im[keep] = self.rot_im[k];
+                    self.base_w[keep] = self.base_w[k];
                     self.decay[keep] = self.decay[k];
                     self.damping[keep] = self.damping[k];
                 }
@@ -111,6 +119,7 @@ impl Voice {
             self.im[k] = 0.0;
             self.rot_re[k] = 1.0;
             self.rot_im[k] = 0.0;
+            self.base_w[k] = 0.0;
             self.decay[k] = 0.0;
             self.damping[k] = 1.0;
             self.n += 1;
@@ -335,6 +344,7 @@ impl StringBank {
 struct Knobs {
     detune_scale: f32,
     attack_scale: f32,
+    glide_cents: f32,
     bed_gain: f32,
     noise_gain: f32,
     split_max: f32,
@@ -352,6 +362,7 @@ impl Knobs {
         Knobs {
             detune_scale: get("PIANO_DETUNE_SCALE", 1.35),
             attack_scale: get("PIANO_ATTACK_SCALE", 1.0),
+            glide_cents: get("PIANO_GLIDE_CENTS", 3.0),
             bed_gain: get("PIANO_BED_GAIN", 1.11),
             noise_gain: get("PIANO_NOISE_GAIN", 1.0),
             split_max: get("PIANO_SPLIT_MAX", 0.7),
@@ -461,6 +472,9 @@ impl Synth for ModalV2 {
             .exp_m1();
 
         let pos = (note as f32 - 21.0) / 87.0;
+        // Hard strikes start sharp: tension-modulation glide, strongest
+        // low on the keyboard, negligible for soft playing.
+        let glide0 = self.knobs.glide_cents * vel * vel * vel * (1.2 - pos);
         let angle = (0.25 + 0.5 * pos) * std::f32::consts::FRAC_PI_2;
         // Hammer/action noise: dark (action thump + soundboard knock live
         // mostly below ~1-3 kHz), brighter when hit hard and toward the
@@ -477,8 +491,10 @@ impl Synth for ModalV2 {
             im: [0.0; MAX_RES],
             rot_re: [1.0; MAX_RES],
             rot_im: [0.0; MAX_RES],
+            base_w: [0.0; MAX_RES],
             decay: [0.0; MAX_RES],
             damping: [1.0; MAX_RES],
+            glide_cents: glide0,
             held: true,
             pan_l: angle.cos(),
             pan_r: angle.sin(),
@@ -654,6 +670,28 @@ impl Synth for ModalV2 {
         left.fill(0.0);
         right.fill(0.0);
         for voice in &mut self.voices {
+            if voice.glide_cents > 0.05 {
+                let ratio = 2f32.powf(voice.glide_cents / 1200.0);
+                for k in 0..voice.n {
+                    if voice.decay[k] > 0.0 {
+                        let w = voice.base_w[k] * ratio;
+                        voice.rot_re[k] = w.cos();
+                        voice.rot_im[k] = w.sin();
+                    }
+                }
+                // ~60 ms settling time, advanced once per block.
+                voice.glide_cents *=
+                    (-(left.len() as f32) / (0.06 * self.sample_rate)).exp();
+                if voice.glide_cents <= 0.05 {
+                    voice.glide_cents = 0.0;
+                    for k in 0..voice.n {
+                        if voice.decay[k] > 0.0 {
+                            voice.rot_re[k] = voice.base_w[k].cos();
+                            voice.rot_im[k] = voice.base_w[k].sin();
+                        }
+                    }
+                }
+            }
             for i in 0..left.len() {
                 let mut sum_slow = 0.0f32;
                 let mut sum_fast = 0.0f32;
