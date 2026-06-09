@@ -33,8 +33,12 @@ struct Voice {
     rot_re: [f32; MAX_RES],
     rot_im: [f32; MAX_RES],
     decay: [f32; MAX_RES],
+    /// Per-resonator damper factor (1.0 = open). Frequency-dependent: the
+    /// damper felt kills high partials almost instantly while the
+    /// fundamental of low notes audibly rings through it — a uniform cut
+    /// reads as an unnatural abrupt stop.
+    damping: [f32; MAX_RES],
     held: bool,
-    damping: f32,
     pan_l: f32,
     pan_r: f32,
     // Tonal attack ramp ~ hammer-string contact time (longer in the bass);
@@ -87,6 +91,7 @@ impl Voice {
                     self.rot_re[keep] = self.rot_re[k];
                     self.rot_im[keep] = self.rot_im[k];
                     self.decay[keep] = self.decay[k];
+                    self.damping[keep] = self.damping[k];
                 }
                 keep += 1;
             }
@@ -103,7 +108,27 @@ impl Voice {
             self.rot_re[k] = 1.0;
             self.rot_im[k] = 0.0;
             self.decay[k] = 0.0;
+            self.damping[k] = 1.0;
             self.n += 1;
+        }
+    }
+
+    /// Apply (or lift) the damper. Felt absorption rises with frequency:
+    /// stop time = base(register) * 600 / (600 + f).
+    fn set_damper(&mut self, on: bool, note: u8, sr: f32) {
+        if !on {
+            self.damping[..self.n].fill(1.0);
+            return;
+        }
+        let pos = (note as f32 - 21.0) / 87.0;
+        let base = 0.15 + 0.35 * (1.0 - pos) * (1.0 - pos);
+        for k in 0..self.n {
+            if self.decay[k] == 0.0 {
+                continue;
+            }
+            let freq = self.rot_im[k].atan2(self.rot_re[k]) * sr / std::f32::consts::TAU;
+            let stop = base * 600.0 / (600.0 + freq.max(0.0));
+            self.damping[k] = decay_factor(60.0 / stop.max(0.015), sr);
         }
     }
 
@@ -404,11 +429,11 @@ impl Synth for ModalV2 {
         // Re-strike: the hammer re-contact largely replaces the previous
         // vibration of this string; letting the old voice ring unattenuated
         // alongside the new one piles up energy in fast repeated notes.
+        let sr = self.sample_rate;
         for v in &mut self.voices {
             if v.note == note {
                 v.held = false;
-                v.damping = damper_factor(note, self.sample_rate)
-                    .min(decay_factor(120.0, self.sample_rate));
+                v.set_damper(true, note, sr);
             }
         }
         if self.voices.len() == self.voices.capacity() {
@@ -447,8 +472,8 @@ impl Synth for ModalV2 {
             rot_re: [1.0; MAX_RES],
             rot_im: [0.0; MAX_RES],
             decay: [0.0; MAX_RES],
+            damping: [1.0; MAX_RES],
             held: true,
-            damping: 1.0,
             pan_l: angle.cos(),
             pan_r: angle.sin(),
             attack_gain: 0.0,
@@ -552,11 +577,16 @@ impl Synth for ModalV2 {
 
     fn note_off(&mut self, note: u8) {
         self.held[note as usize] = false;
+        let sr = self.sample_rate;
         for v in &mut self.voices {
             if v.note == note && v.held {
                 v.held = false;
                 if !self.sustain {
-                    v.damping = damper_factor(v.note, self.sample_rate);
+                    v.set_damper(true, note, sr);
+                    // The soundboard keeps ringing briefly after the string
+                    // is damped; release the bed on its own ~0.3 s slope
+                    // instead of cutting it with the string.
+                    v.bed_decay = decay_factor(60.0 / 0.3, sr);
                     // Damper thud: a dark noise burst scaled by how much
                     // the string was still vibrating, with a faint
                     // mechanical floor (the key/damper always clunks a
@@ -568,9 +598,8 @@ impl Synth for ModalV2 {
                         let ringing =
                             (v.energy() / 2.0).sqrt() * 1.5 + 0.002;
                         v.noise_amp = v.noise_amp.max(ringing);
-                        v.noise_decay =
-                            decay_factor(60.0 / 0.045, self.sample_rate);
-                        let f = biquad_lowpass(420.0, 0.8, self.sample_rate);
+                        v.noise_decay = decay_factor(60.0 / 0.045, sr);
+                        let f = biquad_lowpass(420.0, 0.8, sr);
                         v.noise_b = f.0;
                         v.noise_a = f.1;
                     }
@@ -586,12 +615,15 @@ impl Synth for ModalV2 {
         let down = position >= 0.5;
         if down != self.sustain {
             self.sustain = down;
+            let sr = self.sample_rate;
             for v in &mut self.voices {
                 if !v.held {
-                    v.damping = if down {
-                        1.0
+                    let note = v.note;
+                    v.set_damper(!down, note, sr);
+                    v.bed_decay = if down {
+                        decay_factor(BED_DECAY_DB_S, sr)
                     } else {
-                        damper_factor(v.note, self.sample_rate)
+                        decay_factor(60.0 / 0.3, sr)
                     };
                 }
             }
@@ -609,7 +641,6 @@ impl Synth for ModalV2 {
         left.fill(0.0);
         right.fill(0.0);
         for voice in &mut self.voices {
-            let damping = voice.damping;
             for i in 0..left.len() {
                 let mut acc = [0f32; LANES];
                 for chunk in (0..voice.n).step_by(LANES) {
@@ -617,7 +648,7 @@ impl Synth for ModalV2 {
                     for lane in 0..LANES {
                         let k = chunk + lane;
                         let out = voice.im[k];
-                        let scale = voice.decay[k] * damping;
+                        let scale = voice.decay[k] * voice.damping[k];
                         let re = (voice.re[k] * voice.rot_re[k]
                             - voice.im[k] * voice.rot_im[k])
                             * scale;
@@ -653,7 +684,7 @@ impl Synth for ModalV2 {
                     voice.bed_z.0 = b1 * white - a1 * y + voice.bed_z.1;
                     voice.bed_z.1 = b2 * white - a2 * y;
                     sum += y * voice.bed_amp;
-                    voice.bed_amp *= voice.bed_decay * voice.damping;
+                    voice.bed_amp *= voice.bed_decay;
                 }
                 left[i] += sum * voice.pan_l;
                 right[i] += sum * voice.pan_r;

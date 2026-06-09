@@ -81,6 +81,30 @@ fn main() {
                 events.extend(pedal);
                 events.sort_by(|a, b| a.time.total_cmp(&b.time));
             }
+            if args.iter().any(|a| a == "--legato") {
+                // Typeset MIDI has exactly quantized note lengths with zero
+                // overlap; human fingers overlap adjacent notes. Extend
+                // each note-off ~70 ms into the gap, but never past a
+                // re-strike of the same note.
+                let note_ons: Vec<(f64, u8)> = events
+                    .iter()
+                    .filter_map(|e| match e.kind {
+                        EventKind::NoteOn { note, .. } => Some((e.time, note)),
+                        _ => None,
+                    })
+                    .collect();
+                for e in &mut events {
+                    if let EventKind::NoteOff { note } = e.kind {
+                        let next_strike = note_ons
+                            .iter()
+                            .filter(|(t, n)| *n == note && *t > e.time)
+                            .map(|(t, _)| *t)
+                            .fold(f64::INFINITY, f64::min);
+                        e.time = (e.time + 0.07).min(next_strike - 0.01);
+                    }
+                }
+                events.sort_by(|a, b| a.time.total_cmp(&b.time));
+            }
             eprintln!("{} events over {:.1}s", events.len(),
                 events.last().map(|e| e.time).unwrap_or(0.0));
             let mut audio = render_events(synth.as_mut(), &events, sample_rate, 6.0);
@@ -169,7 +193,7 @@ fn flag_value(args: &[String], flag: &str) -> Option<String> {
 /// Positional arguments after the subcommand (skipping flags; boolean
 /// flags take no value).
 fn positionals(args: &[String]) -> Vec<&String> {
-    const BOOLEAN_FLAGS: &[&str] = &["--auto-pedal", "--dry"];
+    const BOOLEAN_FLAGS: &[&str] = &["--auto-pedal", "--dry", "--legato"];
     let mut out = Vec::new();
     let mut i = 1;
     while i < args.len() {
