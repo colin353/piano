@@ -361,13 +361,13 @@ impl Knobs {
                 .unwrap_or(default)
         };
         Knobs {
-            detune_scale: get("PIANO_DETUNE_SCALE", 1.35),
-            attack_scale: get("PIANO_ATTACK_SCALE", 1.0),
+            detune_scale: get("PIANO_DETUNE_SCALE", 1.82),
+            attack_scale: get("PIANO_ATTACK_SCALE", 0.77),
             glide_cents: get("PIANO_GLIDE_CENTS", 3.0),
             bed_gain: get("PIANO_BED_GAIN", 1.11),
             noise_gain: get("PIANO_NOISE_GAIN", 1.0),
             split_max: get("PIANO_SPLIT_MAX", 0.7),
-            fast_scale: get("PIANO_FAST_SCALE", 1.0),
+            fast_scale: get("PIANO_FAST_SCALE", 0.8),
         }
     }
 }
