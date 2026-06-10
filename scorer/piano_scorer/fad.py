@@ -34,6 +34,9 @@ FAD_SR = 16000
 CHUNK_S = 30
 CORPUS = REPO_ROOT / "out" / "fad"
 GOLDBERG_MIDIS = ["goldberg-aria", "goldberg-v01", "goldberg-v05", "goldberg-v13"]
+# Performed MIDI (ATEPP transcriptions of Gould's own Goldberg recordings):
+# content- AND performance-matched to the real corpus.
+PERFORMED_DIR = REPO_ROOT / "assets" / "midi" / "gould1981"
 FAD_VERSION = 1
 
 
@@ -72,22 +75,29 @@ def prepare_real(source_wav):
     print(f"real corpus: {a} + {b} chunks of {CHUNK_S}s at {FAD_SR} Hz")
 
 
-def render_synth_corpus(synth, dry=False):
-    out_dir = CORPUS / f"synth_{synth}{'_dry' if dry else ''}"
+def render_synth_corpus(synth, dry=False, performed=False):
+    tag = ("_perf" if performed else "") + ("_dry" if dry else "")
+    out_dir = CORPUS / f"synth_{synth}{tag}"
     if out_dir.exists():
         for f in out_dir.glob("*.wav"):
             f.unlink()
+    if performed:
+        midis = sorted(PERFORMED_DIR.glob("*.mid"))
+        # Performed MIDI needs no --legato (real overlaps are in the data).
+        extra = []
+    else:
+        midis = [REPO_ROOT / "assets/midi" / f"{n}.mid" for n in GOLDBERG_MIDIS]
+        extra = ["--legato"]
     total = 0
-    for name in GOLDBERG_MIDIS:
-        tmp = CORPUS / f"_{name}.wav"
+    for path in midis:
+        tmp = CORPUS / f"_{path.stem}.wav"
         subprocess.run(
-            [str(REPO_ROOT / "target/release/piano-render"), "midi",
-             str(REPO_ROOT / "assets/midi" / f"{name}.mid"),
-             "--synth", synth, "--legato", "-o", str(tmp)]
-            + (["--dry"] if dry else []),
+            [str(REPO_ROOT / "target/release/piano-render"), "midi", str(path),
+             "--synth", synth, "-o", str(tmp)]
+            + extra + (["--dry"] if dry else []),
             check=True, capture_output=True,
         )
-        total += _write_chunks(_load_16k_mono(tmp), out_dir, name, total)
+        total += _write_chunks(_load_16k_mono(tmp), out_dir, path.stem, total)
         tmp.unlink()
     return out_dir, total
 
@@ -96,6 +106,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--synth")
     parser.add_argument("--dry", action="store_true", help="render without the room")
+    parser.add_argument("--performed", action="store_true",
+                        help="use the ATEPP Gould performance MIDI corpus")
     parser.add_argument("--prepare-real", metavar="WAV")
     args = parser.parse_args()
 
@@ -109,7 +121,8 @@ def main():
     if not real_a.exists():
         raise SystemExit("real corpus missing — run --prepare-real first")
 
-    synth_dir, n = render_synth_corpus(args.synth, dry=args.dry)
+    synth_dir, n = render_synth_corpus(args.synth, dry=args.dry,
+                                       performed=args.performed)
     print(f"synth corpus: {n} chunks")
 
     # laion_clap (a transitive dep) runs an argparse at import time and
@@ -130,7 +143,8 @@ def main():
     run = {
         "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "fad_version": FAD_VERSION,
-        "synth": args.synth + ("_dry" if args.dry else ""),
+        "synth": args.synth + ("_perf" if args.performed else "")
+        + ("_dry" if args.dry else ""),
         "floor_real_vs_real": floor,
         "fad": score,
         "elapsed_s": round(time.time() - start, 1),
