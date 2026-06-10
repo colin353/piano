@@ -79,3 +79,15 @@ dynamic layers — PP (vel 41–67), MP (68–84), MF (85–100), FF (101–127)
 representative render velocities 54/76/92/114. Exact note numbers come
 from `pitch_keycenter` in `Data/*.txt` (the library's filenames use a
 shifted octave convention; never parse them).
+
+## Piece-level metric: FAD
+
+`cd scorer && uv run piano-fad --synth modal-v2` — Fréchet Audio Distance
+(VGGish embeddings) between rendered Goldberg pieces and a real recording
+corpus (Gould 1981, content-matched; prepare once with
+`piano-fad --prepare-real <wav>`). No pairing needed: it compares
+embedding *distributions*, measuring the gestalt the single-note scorer
+cannot see (releases, transitions, pedal, room). Calibration anchors:
+real-vs-real floor 0.28, sine baseline 11.8, modal-v2 dry 15.1 (!),
+modal-v2 with room 7.2 — the metric is strongly production-sensitive,
+so compare like-rendered corpora only.

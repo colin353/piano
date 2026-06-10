@@ -9,6 +9,7 @@ dependencies = [
     "soundfile>=0.12",
     "librosa>=0.10",
     "matplotlib>=3.8",
+    "frechet-audio-distance>=0.3.4",
 ]
 
 [project.optional-dependencies]
@@ -21,6 +22,7 @@ piano-score = "piano_scorer.score:main"
 piano-plot = "piano_scorer.plots:main"
 piano-calibrate = "piano_scorer.calibrate:main"
 piano-optimize = "piano_scorer.optimize:main"
+piano-fad = "piano_scorer.fad:main"
 
 [build-system]
 requires = ["hatchling"]
