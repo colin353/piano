@@ -111,7 +111,7 @@ fn main() {
             // Room reverb by default (presentation only — scoring uses the
             // dry `note` path); --dry disables.
             if !args.iter().any(|a| a == "--dry") {
-                let mut room = piano::reverb::Reverb::new(sample_rate, 1.8, 0.55);
+                let mut room = piano::reverb::Reverb::default_room(sample_rate);
                 let n = audio.len() / 2;
                 let mut l: Vec<f32> = (0..n).map(|i| audio[2 * i]).collect();
                 let mut r: Vec<f32> = (0..n).map(|i| audio[2 * i + 1]).collect();

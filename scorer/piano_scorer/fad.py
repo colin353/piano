@@ -102,6 +102,72 @@ def render_synth_corpus(synth, dry=False, performed=False):
     return out_dir, total
 
 
+def _fad_model():
+    # laion_clap (a transitive dep) runs an argparse at import time and
+    # chokes on our CLI args; hide argv during the import.
+    import sys
+    argv, sys.argv = sys.argv, sys.argv[:1]
+    from frechet_audio_distance import FrechetAudioDistance
+    sys.argv = argv
+    return FrechetAudioDistance(model_name="vggish", sample_rate=FAD_SR,
+                                use_pca=False, use_activation=False, verbose=False)
+
+
+# Knobs the FAD objective is allowed to tune (presentation + ensemble
+# levels — single-note timbre stays owned by the note metric, guarded
+# by a quick-score check after optimization).
+FAD_KNOBS = {
+    "PIANO_BED_GAIN": (0.82, 1.35, (0.4, 4.0)),
+    "PIANO_NOISE_GAIN": (1.0, 1.4, (0.2, 3.0)),
+    "PIANO_BANK_DRIVE": (0.031, 1.6, (0.002, 0.06)),
+    "PIANO_REVERB_WET": (0.93, 1.3, (0.2, 1.2)),
+    "PIANO_REVERB_RT60": (2.25, 1.25, (0.8, 3.5)),
+}
+
+
+def optimize():
+    import os
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--synth", default="modal-v2")
+    parser.add_argument("--rounds", type=int, default=2)
+    args = parser.parse_args()
+
+    fad = _fad_model()
+    real_a = CORPUS / "real_a"
+    bg_cache = str(CORPUS / "real_a_embds.npy")
+
+    def evaluate(values):
+        for k, v in values.items():
+            os.environ[k] = f"{v:.5f}"
+        synth_dir, _ = render_synth_corpus(args.synth, performed=True)
+        return fad.score(str(real_a), str(synth_dir), background_embds_path=bg_cache)
+
+    values = {k: spec[0] for k, spec in FAD_KNOBS.items()}
+    best = evaluate(values)
+    print(f"start: FAD {best:.3f}  {values}")
+    for round_idx in range(args.rounds):
+        improved = False
+        for knob, (_, step, (lo, hi)) in FAD_KNOBS.items():
+            for factor in (1.0 / step, step):
+                trial = dict(values)
+                trial[knob] = min(hi, max(lo, values[knob] * factor))
+                if trial[knob] == values[knob]:
+                    continue
+                score = evaluate(trial)
+                marker = ""
+                if score < best - 1e-3:
+                    best, values, improved = score, trial, True
+                    marker = "  <-- accepted"
+                print(f"  {knob}={trial[knob]:.4f}: {score:.3f}{marker}")
+        print(f"round {round_idx + 1}: best {best:.3f}  {values}")
+        if not improved:
+            break
+    print("\nfinal:")
+    for k, v in values.items():
+        print(f"  {k}={v:.4f}")
+    print(f"final FAD: {best:.3f}")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--synth")
@@ -125,17 +191,11 @@ def main():
                                        performed=args.performed)
     print(f"synth corpus: {n} chunks")
 
-    # laion_clap (a transitive dep) runs an argparse at import time and
-    # chokes on our CLI args; hide argv during the import.
-    import sys
-    argv, sys.argv = sys.argv, sys.argv[:1]
-    from frechet_audio_distance import FrechetAudioDistance
-    sys.argv = argv
-    fad = FrechetAudioDistance(model_name="vggish", sample_rate=FAD_SR,
-                               use_pca=False, use_activation=False, verbose=False)
+    fad = _fad_model()
     start = time.time()
-    floor = fad.score(str(real_a), str(real_b))
-    score = fad.score(str(real_a), str(synth_dir))
+    bg_cache = str(CORPUS / "real_a_embds.npy")
+    floor = fad.score(str(real_a), str(real_b), background_embds_path=bg_cache)
+    score = fad.score(str(real_a), str(synth_dir), background_embds_path=bg_cache)
     print(f"\nFAD vs Gould Goldberg (VGGish):")
     print(f"  real-vs-real floor : {floor:.3f}")
     print(f"  {args.synth:18s} : {score:.3f}")

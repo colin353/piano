@@ -45,6 +45,22 @@ pub struct Reverb {
 }
 
 impl Reverb {
+    /// Construct with the shipped room, honoring PIANO_REVERB_RT60 /
+    /// PIANO_REVERB_WET env overrides (used by the FAD optimizer).
+    pub fn default_room(sample_rate: f32) -> Reverb {
+        let get = |name: &str, default: f32| {
+            std::env::var(name)
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(default)
+        };
+        Reverb::new(
+            sample_rate,
+            get("PIANO_REVERB_RT60", 2.25),
+            get("PIANO_REVERB_WET", 0.93),
+        )
+    }
+
     /// `rt60` in seconds, `wet` 0..1 (dry stays at unity).
     pub fn new(sample_rate: f32, rt60: f32, wet: f32) -> Reverb {
         let ms = |m: f32| (m / 1000.0 * sample_rate) as usize;

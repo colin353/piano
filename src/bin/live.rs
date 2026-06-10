@@ -144,7 +144,7 @@ fn main() {
     let mut left = [0f32; BLOCK];
     let mut right = [0f32; BLOCK];
     let dry = args.iter().any(|a| a == "--dry");
-    let mut room = (!dry).then(|| piano::reverb::Reverb::new(sample_rate as f32, 1.8, 0.55));
+    let mut room = (!dry).then(|| piano::reverb::Reverb::default_room(sample_rate as f32));
 
     let stream = device
         .build_output_stream(

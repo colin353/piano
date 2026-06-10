@@ -74,6 +74,12 @@ struct Voice {
     bed_a: (f32, f32),
     bed_z: (f32, f32),
     bed_z2: (f32, f32),
+    // Second cascaded stage (4-pole total): the real between-partial
+    // residual is sparse tonal shimmer, not broadband noise — a 2-pole
+    // bed leaves an audible hiss halo, worst in the partial-dense mid
+    // range. Steeper filtering keeps the low body, kills the hiss.
+    bed_y: (f32, f32),
+    bed_y2: (f32, f32),
 }
 
 impl Voice {
@@ -361,6 +367,8 @@ struct Knobs {
     noise_gain: f32,
     split_max: f32,
     fast_scale: f32,
+    bank_drive: f32,
+    bank_ping: f32,
 }
 
 impl Knobs {
@@ -375,10 +383,12 @@ impl Knobs {
             detune_scale: get("PIANO_DETUNE_SCALE", 1.82),
             attack_scale: get("PIANO_ATTACK_SCALE", 0.77),
             glide_cents: get("PIANO_GLIDE_CENTS", 3.0),
-            bed_gain: get("PIANO_BED_GAIN", 1.11),
+            bed_gain: get("PIANO_BED_GAIN", 0.82),
             noise_gain: get("PIANO_NOISE_GAIN", 1.0),
             split_max: get("PIANO_SPLIT_MAX", 0.7),
             fast_scale: get("PIANO_FAST_SCALE", 0.8),
+            bank_drive: get("PIANO_BANK_DRIVE", 0.031),
+            bank_ping: get("PIANO_BANK_PING", 0.08),
         }
     }
 }
@@ -411,7 +421,7 @@ impl ModalV2 {
             rng: 0x12345678,
             held: [false; 128],
             bank: StringBank::new(sample_rate),
-            bank_drive: 0.012,
+            bank_drive: Knobs::from_env().bank_drive,
             bank_level: 1.0,
             knobs: Knobs::from_env(),
         }
@@ -545,10 +555,12 @@ impl Synth for ModalV2 {
             // is exactly target_rms after normalization.
             bed_amp: target_rms * 10f32.powf(params.bed_db / 20.0) * self.knobs.bed_gain,
             bed_decay: decay_factor(BED_DECAY_DB_S, self.sample_rate),
-            bed_b: biquad_lowpass(params.bed_centroid_hz, 1.2, self.sample_rate).0,
-            bed_a: biquad_lowpass(params.bed_centroid_hz, 1.2, self.sample_rate).1,
+            bed_b: biquad_lowpass(params.bed_centroid_hz * 0.6, 1.2, self.sample_rate).0,
+            bed_a: biquad_lowpass(params.bed_centroid_hz * 0.6, 1.2, self.sample_rate).1,
             bed_z: (0.0, 0.0),
             bed_z2: (0.0, 0.0),
+            bed_y: (0.0, 0.0),
+            bed_y2: (0.0, 0.0),
         };
 
         let mut rng = self.rng;
@@ -659,7 +671,7 @@ impl Synth for ModalV2 {
         self.rng = self.rng.wrapping_mul(0x9E3779B9).wrapping_add(1);
         self.held[note as usize] = true;
         let mut rng = self.rng;
-        self.bank.ping(note, target_rms * 0.08, &mut rng);
+        self.bank.ping(note, target_rms * self.knobs.bank_ping, &mut rng);
         self.rng = rng;
         self.bank.set_open(note, true);
     }
@@ -822,14 +834,24 @@ impl Synth for ModalV2 {
                     // Bed: two independent filtered noise streams.
                     let (b0, b1, b2) = voice.bed_b;
                     let (a1, a2) = voice.bed_a;
-                    let y = b0 * white + voice.bed_z.0;
+                    let mut y = b0 * white + voice.bed_z.0;
                     voice.bed_z.0 = b1 * white - a1 * y + voice.bed_z.1;
                     voice.bed_z.1 = b2 * white - a2 * y;
-                    let y2 = b0 * white2 + voice.bed_z2.0;
+                    let mut y2 = b0 * white2 + voice.bed_z2.0;
                     voice.bed_z2.0 = b1 * white2 - a1 * y2 + voice.bed_z2.1;
                     voice.bed_z2.1 = b2 * white2 - a2 * y2;
-                    l += y * voice.bed_amp * voice.pan_l;
-                    r += y2 * voice.bed_amp * voice.pan_r;
+                    // Second cascaded stage.
+                    let yc = b0 * y + voice.bed_y.0;
+                    voice.bed_y.0 = b1 * y - a1 * yc + voice.bed_y.1;
+                    voice.bed_y.1 = b2 * y - a2 * yc;
+                    y = yc;
+                    let yc2 = b0 * y2 + voice.bed_y2.0;
+                    voice.bed_y2.0 = b1 * y2 - a1 * yc2 + voice.bed_y2.1;
+                    voice.bed_y2.1 = b2 * y2 - a2 * yc2;
+                    y2 = yc2;
+                    // ~+3 dB makes up the passband loss of the cascade.
+                    l += y * voice.bed_amp * 1.4 * voice.pan_l;
+                    r += y2 * voice.bed_amp * 1.4 * voice.pan_r;
                     voice.bed_amp *= voice.bed_decay;
                 }
                 left[i] += l;

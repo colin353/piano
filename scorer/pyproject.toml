@@ -23,6 +23,7 @@ piano-plot = "piano_scorer.plots:main"
 piano-calibrate = "piano_scorer.calibrate:main"
 piano-optimize = "piano_scorer.optimize:main"
 piano-fad = "piano_scorer.fad:main"
+piano-fad-opt = "piano_scorer.fad:optimize"
 
 [build-system]
 requires = ["hatchling"]
