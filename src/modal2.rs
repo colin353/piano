@@ -21,9 +21,9 @@ const MAX_VOICES: usize = 40;
 /// inaudible and the second resonator just costs CPU.
 const UNISON_PARTIALS: usize = 16;
 const LANES: usize = 8;
-/// Resonators per voice: every partial, plus pairs for the low ones,
-/// rounded up to a whole number of lanes.
-const MAX_RES: usize = (N_SLOTS + UNISON_PARTIALS).div_ceil(LANES) * LANES;
+/// Resonators per voice: every partial, plus up to two extra unison
+/// strings for the low partials, rounded up to a whole number of lanes.
+const MAX_RES: usize = (N_SLOTS + 2 * UNISON_PARTIALS).div_ceil(LANES) * LANES;
 
 struct Voice {
     note: u8,
@@ -40,6 +40,10 @@ struct Voice {
     /// fundamental of low notes audibly rings through it — a uniform cut
     /// reads as an unnatural abrupt stop.
     damping: [f32; MAX_RES],
+    /// Damper landing blend 0..1: real dampers take ~35 ms to settle onto
+    /// the string; instant grip is a derivative discontinuity in the
+    /// envelope that reads as a clipped release.
+    damper_blend: f32,
     held: bool,
     pan_l: f32,
     pan_r: f32,
@@ -133,7 +137,12 @@ impl Voice {
     fn set_damper(&mut self, on: bool, note: u8, sr: f32, pressure: f32) {
         if !on || pressure <= 0.02 {
             self.damping[..self.n].fill(1.0);
+            self.damper_blend = 1.0;
             return;
+        }
+        // Start the landing ramp only when coming from fully open.
+        if self.damping[..self.n].iter().all(|&d| d >= 1.0) {
+            self.damper_blend = 0.0;
         }
         let pos = (note as f32 - 21.0) / 87.0;
         let base = 0.15 + 0.35 * (1.0 - pos) * (1.0 - pos);
@@ -510,6 +519,7 @@ impl Synth for ModalV2 {
             base_w: [0.0; MAX_RES],
             decay: [0.0; MAX_RES],
             damping: [1.0; MAX_RES],
+            damper_blend: 1.0,
             glide_cents: glide0,
             held: true,
             pan_l: angle.cos(),
@@ -568,25 +578,54 @@ impl Synth for ModalV2 {
             let amp = level * 10f32.powf((params.amps_db[n - 1] + tilt_db + una_tilt) / 20.0);
             let fast = (params.decays_fast[n - 1] * self.knobs.fast_scale).clamp(0.3, 300.0);
             let slow = params.decays_slow[n - 1].clamp(0.3, fast);
-            let mut split = params.slow_split[n - 1].clamp(0.02, self.knobs.split_max);
+            // Cap the slow share of the dominant low partials: a 50/50
+            // split lets the unison components cancel completely, which
+            // is deeper than real instruments ever beat.
+            let split_cap = (0.30 + 0.06 * (nf - 1.0)).min(self.knobs.split_max);
+            let mut split = params.slow_split[n - 1].clamp(0.02, split_cap);
             if una {
                 split = (split * 1.6).min(0.9);
             }
             if n <= UNISON_PARTIALS {
-                // Split the partial across two detuned strings using the
+                // Split the partial across the unison strings using the
                 // fitted prompt-sound / aftersound rates: their sum
-                // reproduces the measured double decay, their detune the
-                // beats.
+                // reproduces the measured double decay, their detunes the
+                // beats. Notes with three strings get three resonators —
+                // a two-resonator unison cancels COMPLETELY whenever the
+                // fitted split passes near 0.5 (audible as a throbbing
+                // null on specific notes); three phasors with scrambled
+                // phases essentially never null together.
+                // The slow aftersound is mostly the string's perpendicular
+                // polarization — phase-quadrature to the prompt sound and
+                // nearly co-tuned. Quadrature components cannot cancel, so
+                // the fast/slow amplitude crossing is a smooth crossover
+                // instead of the deep destructive notch a free-phase pair
+                // produces (the 'distorted mid note' defect). A separate,
+                // genuinely detuned small component carries the audible
+                // unison beat shimmer.
+                let phase_c = rand_phase();
                 voice.push_resonator(
-                    freq, amp * (1.0 - split), rand_phase(), fast, self.sample_rate,
+                    freq, amp * (1.0 - split), phase_c, fast, self.sample_rate,
                 );
+                let quad_share = if note >= 44 { 0.7 } else { 1.0 };
                 voice.push_resonator(
-                    freq * (1.0 + detune_ratio),
-                    amp * split,
-                    rand_phase(),
+                    freq + 0.05,
+                    amp * split * quad_share,
+                    phase_c + std::f32::consts::FRAC_PI_2,
                     slow,
                     self.sample_rate,
                 );
+                if note >= 44 {
+                    let jit = 0.75 + 0.5 * (rand_phase() / std::f32::consts::TAU);
+                    let df = (freq * detune_ratio * jit).max(0.7);
+                    voice.push_resonator(
+                        freq + df,
+                        amp * split * 0.3,
+                        rand_phase(),
+                        slow * 1.3,
+                        self.sample_rate,
+                    );
+                }
             } else {
                 voice.push_resonator(freq, amp, rand_phase(), fast, self.sample_rate);
             }
@@ -701,6 +740,9 @@ impl Synth for ModalV2 {
         left.fill(0.0);
         right.fill(0.0);
         for voice in &mut self.voices {
+            let blend = voice.damper_blend;
+            voice.damper_blend =
+                (voice.damper_blend + left.len() as f32 / (0.035 * self.sample_rate)).min(1.0);
             if voice.glide_cents > 0.05 {
                 let ratio = 2f32.powf(voice.glide_cents / 1200.0);
                 for k in 0..voice.n {
@@ -732,7 +774,8 @@ impl Synth for ModalV2 {
                     for lane in 0..LANES {
                         let k = chunk + lane;
                         let out = voice.im[k];
-                        let scale = voice.decay[k] * voice.damping[k];
+                        let scale = voice.decay[k]
+                            * (1.0 + (voice.damping[k] - 1.0) * blend);
                         let re = (voice.re[k] * voice.rot_re[k]
                             - voice.im[k] * voice.rot_im[k])
                             * scale;

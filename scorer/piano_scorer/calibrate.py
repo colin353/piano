@@ -36,9 +36,13 @@ from .sfz import load_reference_map
 # synth's ad-hoc vel^1.6 loudness map.
 # v8: N_SLOTS 60 -> 150 (bass notes have audible partials to ~5 kHz;
 # 60 slots capped A0 at 1.65 kHz).
+# v9: slow_split median-filtered across neighboring notes per partial —
+# the raw fits are bimodally noisy (0.05 vs 0.7 on adjacent notes), so
+# interpolation swept through 0.5 where a two-string unison cancels
+# completely (the mid-keyboard 'throbbing null' defect).
 # v7: attack_ms — onset-to-envelope-peak rise time. Instant-on partials
 # sound plucked; real hammered notes swell over 10-50 ms.
-CALIBRATION_VERSION = 8
+CALIBRATION_VERSION = 9
 
 # The bed decays slowly; this assumed rate back-projects the late
 # measurement to t=0 and is what the synth plays it back with.
@@ -207,6 +211,16 @@ def main():
             smooth[i] = np.median(loud[lo:hi])
         for r, v in zip(layer_rows, smooth):
             r["loudness_db"] = round(float(np.clip(v, -12, 12)), 2)
+    # slow_split: median-filter per partial index across neighboring notes.
+    for layer_rows in layers.values():
+        for idx in range(N_SLOTS):
+            vals = np.array([r["slow_split"][idx] for r in layer_rows])
+            sm = vals.copy()
+            for i in range(len(vals)):
+                lo, hi = max(0, i - 1), min(len(vals), i + 2)
+                sm[i] = np.median(vals[lo:hi])
+            for r, v in zip(layer_rows, sm):
+                r["slow_split"][idx] = round(float(v), 3)
     # Bed level/centroid: trust only the FF measurements (loudest source,
     # best SNR); the bed scales with note loudness across layers anyway.
     ff_rows = sorted(layers["FF"], key=lambda r: r["note"])
