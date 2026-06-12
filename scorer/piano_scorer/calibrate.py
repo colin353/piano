@@ -36,13 +36,21 @@ from .sfz import load_reference_map
 # synth's ad-hoc vel^1.6 loudness map.
 # v8: N_SLOTS 60 -> 150 (bass notes have audible partials to ~5 kHz;
 # 60 slots capped A0 at 1.65 kHz).
+# v10: defective-sample repair. Several library samples (G#3, C4, G4 in
+# every layer) have abnormally fast-dying fundamentals — partials 2-4
+# end up 10-22 dB ABOVE the fundamental where neighbors sit 15 dB below.
+# The synth faithfully reproduced the defect (and the pair-metric cannot
+# object, since synth matches reference). Notes whose spectral balance
+# (mean of partials 2-4 rel fundamental) deviates > +10 dB from the
+# neighborhood median at audible levels are rebuilt by interpolating
+# per-partial data from the nearest clean neighbors.
 # v9: slow_split median-filtered across neighboring notes per partial —
 # the raw fits are bimodally noisy (0.05 vs 0.7 on adjacent notes), so
 # interpolation swept through 0.5 where a two-string unison cancels
 # completely (the mid-keyboard 'throbbing null' defect).
 # v7: attack_ms — onset-to-envelope-peak rise time. Instant-on partials
 # sound plucked; real hammered notes swell over 10-50 ms.
-CALIBRATION_VERSION = 9
+CALIBRATION_VERSION = 10
 
 # The bed decays slowly; this assumed rate back-projects the late
 # measurement to t=0 and is what the synth plays it back with.
@@ -221,6 +229,34 @@ def main():
                 sm[i] = np.median(vals[lo:hi])
             for r, v in zip(layer_rows, sm):
                 r["slow_split"][idx] = round(float(v), 3)
+    # Defective-sample repair (see v10 note above).
+    ARRAY_KEYS = ("amps_db", "decays_fast_db_s", "decays_slow_db_s", "slow_split")
+    for layer_name, layer_rows in layers.items():
+        balances = np.array([np.mean(r["amps_db"][1:4]) for r in layer_rows])
+        flagged = []
+        for i in range(len(layer_rows)):
+            lo, hi = max(0, i - 2), min(len(layer_rows), i + 3)
+            nb = np.delete(balances[lo:hi], i - lo)
+            dev = balances[i] - np.median(nb)
+            if dev > 10.0 and balances[i] > -35.0:
+                flagged.append(i)
+        for i in flagged:
+            prev = next((j for j in range(i - 1, -1, -1) if j not in flagged), None)
+            nxt = next((j for j in range(i + 1, len(layer_rows)) if j not in flagged), None)
+            if prev is None or nxt is None:
+                continue
+            a, b = layer_rows[prev], layer_rows[nxt]
+            w = (layer_rows[i]["note"] - a["note"]) / (b["note"] - a["note"])
+            for key in ARRAY_KEYS:
+                layer_rows[i][key] = [
+                    round(float(x + w * (y - x)), 3)
+                    for x, y in zip(a[key], b[key])
+                ]
+            for key in ("attack_ms", "bed_db"):
+                layer_rows[i][key] = round(
+                    a[key] + w * (b[key] - a[key]), 1)
+            print(f"  repaired {layer_name} note {layer_rows[i]['note']} "
+                  f"(hollow fundamental, dev {balances[i] - np.median(np.delete(balances[max(0,i-2):i+3], i-max(0,i-2))):+.1f} dB)")
     # Bed level/centroid: trust only the FF measurements (loudest source,
     # best SNR); the bed scales with note loudness across layers anyway.
     ff_rows = sorted(layers["FF"], key=lambda r: r["note"])

@@ -156,7 +156,7 @@ impl Voice {
             if self.decay[k] == 0.0 {
                 continue;
             }
-            let freq = self.rot_im[k].atan2(self.rot_re[k]) * sr / std::f32::consts::TAU;
+            let freq = self.base_w[k] * sr / std::f32::consts::TAU;
             let stop = base * 600.0 / (600.0 + freq.max(0.0));
             let rate = 60.0 / stop.max(0.015) * pressure * pressure;
             self.damping[k] = decay_factor(rate, sr);
