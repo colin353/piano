@@ -151,7 +151,7 @@ impl Voice {
             self.damper_blend = 0.0;
         }
         let pos = (note as f32 - 21.0) / 87.0;
-        let base = 0.15 + 0.35 * (1.0 - pos) * (1.0 - pos);
+        let base = 0.20 + 0.45 * (1.0 - pos) * (1.0 - pos);
         for k in 0..self.n {
             if self.decay[k] == 0.0 {
                 continue;
@@ -237,8 +237,12 @@ impl StringBank {
                 // Sympathetic ring decays like the string's aftersound.
                 let ring = params.decays_slow[p].clamp(1.0, 30.0);
                 bank.open_decay[k] = decay_factor(ring, sample_rate);
-                bank.damped_decay[k] = damper_factor(note, sample_rate)
-                    .min(decay_factor(ring, sample_rate));
+                // Resting dampers LEAK: partials with nodes at the damper
+                // position keep ringing, and duplex segments have no
+                // dampers at all. ~35 dB/s instead of a felt-stop kill —
+                // this leakage is most of a real piano's release halo.
+                bank.damped_decay[k] =
+                    decay_factor(35.0, sample_rate).min(bank.open_decay[k]);
                 bank.decay[k] = bank.damped_decay[k];
                 // Lower partials couple more strongly through the bridge.
                 // The (1 - decay) factor normalizes resonant buildup: a
@@ -369,6 +373,7 @@ struct Knobs {
     fast_scale: f32,
     bank_drive: f32,
     bank_ping: f32,
+    body_gain: f32,
 }
 
 impl Knobs {
@@ -389,7 +394,68 @@ impl Knobs {
             fast_scale: get("PIANO_FAST_SCALE", 0.8),
             bank_drive: get("PIANO_BANK_DRIVE", 0.031),
             bank_ping: get("PIANO_BANK_PING", 0.08),
+            body_gain: get("PIANO_BODY_GAIN", 0.25),
         }
+    }
+}
+
+/// The soundboard body: a small dark feedback-delay network that the
+/// whole instrument plays into. Unlike the per-voice bed (which dies
+/// with its voice) and the room (presentation-only), the body is part of
+/// the instrument: it keeps ringing ~0.4 s after dampers fall — the
+/// 'dry reverberance' a real piano has even in a dead room — and gives
+/// the top octave its knock-into-the-box character.
+struct Body {
+    lines: [Vec<f32>; 4],
+    pos: [usize; 4],
+    fb: [f32; 4],
+    damp: [f32; 4],
+    damp_coeff: f32,
+    gain: f32,
+}
+
+impl Body {
+    fn new(sample_rate: f32, gain: f32) -> Body {
+        let ms = |m: f32| ((m / 1000.0 * sample_rate) as usize).max(1);
+        // Short, mutually-detuned delays: dense early soundboard modes.
+        let lens = [ms(7.9), ms(11.3), ms(14.7), ms(18.9)];
+        let rt = 0.55; // seconds to -60 dB
+        let mut fb = [0f32; 4];
+        for (i, &len) in lens.iter().enumerate() {
+            fb[i] = 10f32.powf(-3.0 * len as f32 / (rt * sample_rate));
+        }
+        Body {
+            lines: lens.map(|l| vec![0.0; l]),
+            pos: [0; 4],
+            fb,
+            damp: [0.0; 4],
+            damp_coeff: (-std::f32::consts::TAU * 2800.0 / sample_rate).exp(),
+            gain,
+        }
+    }
+
+    #[inline]
+    fn step(&mut self, input: f32) -> f32 {
+        let mut taps = [0f32; 4];
+        let mut sum = 0.0;
+        for k in 0..4 {
+            taps[k] = self.lines[k][self.pos[k]];
+            sum += taps[k];
+        }
+        let h = 0.5 * sum; // Householder (2/N, N=4)
+        let mut out = 0.0;
+        for k in 0..4 {
+            let mut v = (taps[k] - h) * self.fb[k] + input * 0.5;
+            self.damp[k] = self.damp[k] * self.damp_coeff + v * (1.0 - self.damp_coeff);
+            v = self.damp[k];
+            self.lines[k][self.pos[k]] = v;
+            self.pos[k] += 1;
+            if self.pos[k] == self.lines[k].len() {
+                self.pos[k] = 0;
+            }
+            out += if k % 2 == 0 { taps[k] } else { -taps[k] };
+        }
+        out * self.gain
     }
 }
 
@@ -407,6 +473,7 @@ pub struct ModalV2 {
     /// Bridge coupling into the bank and bank level back into the mix.
     bank_drive: f32,
     bank_level: f32,
+    body: Body,
     knobs: Knobs,
 }
 
@@ -423,6 +490,7 @@ impl ModalV2 {
             bank: StringBank::new(sample_rate),
             bank_drive: Knobs::from_env().bank_drive,
             bank_level: 1.0,
+            body: Body::new(sample_rate, Knobs::from_env().body_gain),
             knobs: Knobs::from_env(),
         }
     }
@@ -515,7 +583,8 @@ impl Synth for ModalV2 {
         // mostly below ~1-3 kHz), brighter when hit hard and toward the
         // treble. It also grows faster with velocity than the tone does —
         // pp notes have almost none.
-        let cutoff = (300.0 + 2500.0 * vel * vel) * (0.5 + 0.8 * pos);
+        let pos4 = pos * pos * pos * pos;
+        let cutoff = (300.0 + 2500.0 * vel * vel) * (0.5 + 0.8 * pos + 0.9 * pos4);
         let noise_seconds = 0.010 + 0.015 * (1.0 - pos);
         let noise_filter = biquad_lowpass(cutoff, 0.9, self.sample_rate);
 
@@ -546,7 +615,8 @@ impl Synth for ModalV2 {
                     / 3.0;
                 1.0 / (t * self.sample_rate)
             },
-            noise_amp: target_rms * (0.12 + 0.30 * pos) * vel * self.knobs.noise_gain,
+            noise_amp: target_rms * (0.12 + 0.30 * pos + 0.5 * pos4) * vel
+                * self.knobs.noise_gain,
             noise_decay: decay_factor(60.0 / noise_seconds, self.sample_rate),
             noise_b: noise_filter.0,
             noise_a: noise_filter.1,
@@ -689,7 +759,7 @@ impl Synth for ModalV2 {
                     // The soundboard keeps ringing briefly after the string
                     // is damped; release the bed on its own ~0.3 s slope
                     // instead of cutting it with the string.
-                    v.bed_decay = decay_factor(60.0 / 0.3, sr);
+                    v.bed_decay = decay_factor(60.0 / 0.6, sr);
                     // Damper thud: a dark noise burst scaled by how much
                     // the string was still vibrating, with a faint
                     // mechanical floor (the key/damper always clunks a
@@ -726,7 +796,7 @@ impl Synth for ModalV2 {
                 v.bed_decay = if down {
                     decay_factor(BED_DECAY_DB_S, sr)
                 } else {
-                    decay_factor(60.0 / 0.3, sr)
+                    decay_factor(60.0 / 0.6, sr)
                 };
             }
         }
@@ -860,12 +930,16 @@ impl Synth for ModalV2 {
             voice.compact();
         }
         // Sympathetic bank: driven by the voice mix (no feedback — the
-        // bank does not hear itself).
+        // bank does not hear itself). The soundboard body rings on top of
+        // everything and survives note releases.
         for i in 0..left.len() {
             let drive = (left[i] + right[i]) * self.bank_drive;
             let (bl, br) = self.bank.step(drive);
             left[i] += bl * self.bank_level;
             right[i] += br * self.bank_level;
+            let body = self.body.step(0.5 * (left[i] + right[i]));
+            left[i] += body;
+            right[i] += body;
         }
         self.voices.retain(|v| v.energy() > 1e-12);
     }
