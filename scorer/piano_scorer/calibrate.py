@@ -36,6 +36,10 @@ from .sfz import load_reference_map
 # synth's ad-hoc vel^1.6 loudness map.
 # v8: N_SLOTS 60 -> 150 (bass notes have audible partials to ~5 kHz;
 # 60 slots capped A0 at 1.65 kHz).
+# v11: attack_bands_db — four-band levels of the PERCUSSIVE component of
+# the attack (HPSS-separated, RMS over the first 120 ms rel early RMS).
+# Real treble notes are 30-50% percussive energy with strong low/mid
+# thump bands; the synth had ~1% ('bell-like', per user).
 # v10: defective-sample repair. Several library samples (G#3, C4, G4 in
 # every layer) have abnormally fast-dying fundamentals — partials 2-4
 # end up 10-22 dB ABOVE the fundamental where neighbors sit 15 dB below.
@@ -50,7 +54,7 @@ from .sfz import load_reference_map
 # completely (the mid-keyboard 'throbbing null' defect).
 # v7: attack_ms — onset-to-envelope-peak rise time. Instant-on partials
 # sound plucked; real hammered notes swell over 10-50 ms.
-CALIBRATION_VERSION = 10
+CALIBRATION_VERSION = 11
 
 # The bed decays slowly; this assumed rate back-projects the late
 # measurement to t=0 and is what the synth plays it back with.
@@ -139,6 +143,30 @@ def _attack_ms(audio, sr):
     return float(np.clip(np.argmax(rms) * 2.0, 2.0, 80.0))
 
 
+PERC_BANDS = ((60, 250), (250, 1000), (1000, 4000), (4000, 12000))
+
+
+def _attack_bands_db(audio, sr):
+    """Band RMS (dB rel the note's early RMS) of the percussive component
+    of the attack, via harmonic/percussive separation."""
+    import librosa
+    from scipy.signal import butter, sosfilt
+    early_rms = np.sqrt(np.mean(audio[: int(0.2 * sr)] ** 2)) + 1e-12
+    head = audio[: int(0.4 * sr)]
+    D = librosa.stft(head, n_fft=1024, hop_length=256)
+    _, P = librosa.decompose.hpss(D, margin=2.0)
+    perc = librosa.istft(P, hop_length=256, length=len(head))
+    window = perc[: int(0.120 * sr)]
+    out = []
+    for lo, hi in PERC_BANDS:
+        sos = butter(4, [lo, min(hi, sr / 2 * 0.95)], btype="band", fs=sr,
+                     output="sos")
+        b = sosfilt(sos, window)
+        rms = np.sqrt(np.mean(b**2))
+        out.append(float(np.clip(20 * np.log10(rms / early_rms + 1e-9), -60, 6)))
+    return out
+
+
 def calibrate_one(sample):
     raw = features.load_mono(sample.path)
     loudness_db = _raw_loudness_db(raw, features.SR)
@@ -173,6 +201,7 @@ def calibrate_one(sample):
         "bed_centroid_hz": round(bed_centroid, 0),
         "loudness_db": round(loudness_db, 2),  # made layer-relative below
         "attack_ms": round(_attack_ms(audio, features.SR), 1),
+        "attack_bands_db": [round(v, 1) for v in _attack_bands_db(audio, features.SR)],
         "amps_db": [round(float(v), 2) for v in amps],
         "decays_fast_db_s": [round(float(v), 2) for v in decays_fast],
         "decays_slow_db_s": [round(float(v), 2) for v in decays_slow],

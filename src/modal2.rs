@@ -59,8 +59,15 @@ struct Voice {
     /// (tension modulation) and settles over ~100 ms. Current sharpness
     /// in cents; rotations are refreshed per block while it rings down.
     glide_cents: f32,
-    // Hammer noise burst: filtered white noise with an exponential decay,
-    // through a 2-pole lowpass (one pole leaves audible hiss — snare-like).
+    // Fitted four-band attack percussion: thump/knock/mid/click noise
+    // bursts at measured levels. Real notes are 30-50% percussive in the
+    // treble; pure partials read as a bell.
+    perc_amp: [f32; 4],
+    perc_decay: [f32; 4],
+    perc_b: [(f32, f32, f32); 4],
+    perc_a: [(f32, f32); 4],
+    perc_z: [(f32, f32); 4],
+    // Noise burst machinery, now used for the release (damper) thud.
     noise_amp: f32,
     noise_decay: f32,
     noise_b: (f32, f32, f32),
@@ -165,6 +172,9 @@ impl Voice {
 
     fn energy(&self) -> f32 {
         let mut e = self.noise_amp * self.noise_amp + self.bed_amp * self.bed_amp;
+        for a in self.perc_amp {
+            e += a * a;
+        }
         for k in 0..self.n {
             e += self.re[k] * self.re[k] + self.im[k] * self.im[k];
         }
@@ -496,6 +506,24 @@ impl ModalV2 {
     }
 }
 
+/// Fitted four-band attack percussion (see calibration v11).
+const PERC_FREQ: [f32; 4] = [140.0, 550.0, 2200.0, 6500.0];
+const PERC_Q: [f32; 4] = [0.7, 0.8, 0.7, 0.7];
+/// Per-band 60 dB decay times: low thump rings longest, click shortest.
+const PERC_DECAY_S: [f32; 4] = [0.110, 0.085, 0.060, 0.025];
+/// Closed-loop level correction: median shortfall of the synth's own
+/// renders measured with the calibration's band fitter (dB per band).
+const PERC_TRIM_DB: [f32; 4] = [11.0, 11.5, 8.5, 0.0];
+
+/// RBJ biquad bandpass (constant peak gain), normalized so a0 = 1.
+fn biquad_bandpass(freq: f32, q: f32, sr: f32) -> ((f32, f32, f32), (f32, f32)) {
+    let w0 = std::f32::consts::TAU * (freq / sr).min(0.45);
+    let alpha = w0.sin() / (2.0 * q);
+    let cos = w0.cos();
+    let a0 = 1.0 + alpha;
+    ((alpha / a0, 0.0, -alpha / a0), (-2.0 * cos / a0, (1.0 - alpha) / a0))
+}
+
 /// Matches BED_DECAY_DB_S in the calibration fitter: bed levels were
 /// back-projected to t=0 assuming this playback decay rate.
 const BED_DECAY_DB_S: f32 = 4.0;
@@ -579,14 +607,37 @@ impl Synth for ModalV2 {
         // low on the keyboard, negligible for soft playing.
         let glide0 = self.knobs.glide_cents * vel * vel * vel * (1.2 - pos);
         let angle = (0.15 + 0.7 * pos) * std::f32::consts::FRAC_PI_2;
-        // Hammer/action noise: dark (action thump + soundboard knock live
-        // mostly below ~1-3 kHz), brighter when hit hard and toward the
-        // treble. It also grows faster with velocity than the tone does —
-        // pp notes have almost none.
-        let pos4 = pos * pos * pos * pos;
-        let cutoff = (300.0 + 2500.0 * vel * vel) * (0.5 + 0.8 * pos + 0.9 * pos4);
-        let noise_seconds = 0.010 + 0.015 * (1.0 - pos);
-        let noise_filter = biquad_lowpass(cutoff, 0.9, self.sample_rate);
+        // Fitted attack percussion bands.
+        let mut perc_amp = [0f32; 4];
+        let mut perc_decay = [0f32; 4];
+        let mut perc_b = [(0f32, 0f32, 0f32); 4];
+        let mut perc_a = [(0f32, 0f32); 4];
+        // The fitted bands are trustworthy (and audibly essential) in the
+        // treble, where real notes are 30-50% percussive; below that the
+        // HPSS fit mostly misreads tonal attack smear, and both FAD and
+        // ears prefer the long-validated heuristic burst. Crossfade.
+        let perc_register = ((pos - 0.60) / 0.25).clamp(0.0, 1.0);
+        for b in 0..4 {
+            // The fitted level is RMS over 120 ms; our burst decays, so
+            // boost so the windowed RMS lands near the measurement.
+            // Normalize for the band's noise bandwidth: a narrow low
+            // bandpass keeps only ~1% of white-noise power.
+            let bw_norm = (self.sample_rate * 0.5 / (PERC_FREQ[b] / PERC_Q[b])).sqrt();
+            perc_amp[b] = target_rms
+                * 10f32.powf((params.attack_bands_db[b] + PERC_TRIM_DB[b]) / 20.0)
+                * 2.5
+                * bw_norm
+                * perc_register
+                * self.knobs.noise_gain;
+            // In the treble the knock rings on into the body for hundreds
+            // of ms (refs are 30-50% percussive over 2 s); these bands are
+            // register-gated, so longer decays cost nothing below.
+            let decay_s = PERC_DECAY_S[b] * (1.0 + 2.0 * perc_register);
+            perc_decay[b] = decay_factor(60.0 / decay_s, self.sample_rate);
+            let f = biquad_bandpass(PERC_FREQ[b], PERC_Q[b], self.sample_rate);
+            perc_b[b] = f.0;
+            perc_a[b] = f.1;
+        }
 
         let mut voice = Voice {
             note,
@@ -615,11 +666,34 @@ impl Synth for ModalV2 {
                     / 3.0;
                 1.0 / (t * self.sample_rate)
             },
-            noise_amp: target_rms * (0.12 + 0.30 * pos + 0.5 * pos4) * vel
+            perc_amp,
+            perc_decay,
+            perc_b,
+            perc_a,
+            perc_z: [(0.0, 0.0); 4],
+            // Heuristic hammer burst for the non-treble registers (the
+            // fitted bands take over via perc_register up top).
+            noise_amp: target_rms
+                * (0.12 + 0.30 * pos + 0.5 * pos * pos * pos * pos)
+                * vel
+                * (1.0 - ((pos - 0.60) / 0.25).clamp(0.0, 1.0))
                 * self.knobs.noise_gain,
-            noise_decay: decay_factor(60.0 / noise_seconds, self.sample_rate),
-            noise_b: noise_filter.0,
-            noise_a: noise_filter.1,
+            noise_decay: decay_factor(
+                60.0 / (0.010 + 0.015 * (1.0 - pos)),
+                self.sample_rate,
+            ),
+            noise_b: biquad_lowpass(
+                (300.0 + 2500.0 * vel * vel) * (0.5 + 0.8 * pos),
+                0.9,
+                self.sample_rate,
+            )
+            .0,
+            noise_a: biquad_lowpass(
+                (300.0 + 2500.0 * vel * vel) * (0.5 + 0.8 * pos),
+                0.9,
+                self.sample_rate,
+            )
+            .1,
             noise_z: (0.0, 0.0),
             // bed_db was measured relative to the note's early RMS, which
             // is exactly target_rms after normalization.
@@ -879,7 +953,8 @@ impl Synth for ModalV2 {
                 let sum = sum_slow * voice.attack_slow + sum_fast * voice.attack_fast;
                 let mut l = sum * voice.pan_l;
                 let mut r = sum * voice.pan_r;
-                if voice.noise_amp > 1e-7 || voice.bed_amp > 1e-7 {
+                let perc_active = voice.perc_amp.iter().any(|&a| a > 1e-7);
+                if perc_active || voice.noise_amp > 1e-7 || voice.bed_amp > 1e-7 {
                     // xorshift32 white noise; two draws so the bed is
                     // genuinely stereo (independent L/R streams).
                     self.rng ^= self.rng << 13;
@@ -890,8 +965,23 @@ impl Synth for ModalV2 {
                     self.rng ^= self.rng >> 17;
                     self.rng ^= self.rng << 5;
                     let white2 = (self.rng as f32 / u32::MAX as f32) * 2.0 - 1.0;
-                    // Hammer burst: resonant 2-pole lowpass.
-                    {
+                    // Fitted attack percussion: four band-passed bursts.
+                    if perc_active {
+                        let mut p = 0.0;
+                        for b in 0..4 {
+                            let (b0, b1, b2) = voice.perc_b[b];
+                            let (a1, a2) = voice.perc_a[b];
+                            let y = b0 * white + voice.perc_z[b].0;
+                            voice.perc_z[b].0 = b1 * white - a1 * y + voice.perc_z[b].1;
+                            voice.perc_z[b].1 = b2 * white - a2 * y;
+                            p += y * voice.perc_amp[b];
+                            voice.perc_amp[b] *= voice.perc_decay[b];
+                        }
+                        l += p * voice.pan_l;
+                        r += p * voice.pan_r;
+                    }
+                    // Release (damper) thud.
+                    if voice.noise_amp > 1e-7 {
                         let (b0, b1, b2) = voice.noise_b;
                         let (a1, a2) = voice.noise_a;
                         let y = b0 * white + voice.noise_z.0;
