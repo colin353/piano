@@ -409,61 +409,79 @@ impl Knobs {
     }
 }
 
-/// The soundboard body: a small dark feedback-delay network that the
-/// whole instrument plays into. Unlike the per-voice bed (which dies
-/// with its voice) and the room (presentation-only), the body is part of
-/// the instrument: it keeps ringing ~0.4 s after dampers fall — the
-/// 'dry reverberance' a real piano has even in a dead room — and gives
-/// the top octave its knock-into-the-box character.
+/// The soundboard body: a modal resonator bank MEASURED from this piano.
+/// Extracted from the percussive component of the topmost reference notes
+/// (the string ping up there dies in ~200 ms, so what remains is hammer
+/// impulse -> soundboard -> mic). Unlike the per-voice bed (dies with its
+/// voice) and the room (presentation-only), the body is part of the
+/// instrument: it rings ~0.5 s after dampers fall and gives the top
+/// octave its knock-into-the-box character.
 struct Body {
-    lines: [Vec<f32>; 4],
-    pos: [usize; 4],
-    fb: [f32; 4],
-    damp: [f32; 4],
-    damp_coeff: f32,
+    re: [f32; 32],
+    im: [f32; 32],
+    rot_re: [f32; 32],
+    rot_im: [f32; 32],
+    decay: [f32; 32],
+    gain_in: [f32; 32],
+    n: usize,
     gain: f32,
+}
+
+#[derive(serde::Deserialize)]
+struct BodyMode {
+    freq_hz: f32,
+    amp_db: f32,
+    decay_db_s: f32,
+}
+
+#[derive(serde::Deserialize)]
+struct BodyModes {
+    modes: Vec<BodyMode>,
 }
 
 impl Body {
     fn new(sample_rate: f32, gain: f32) -> Body {
-        let ms = |m: f32| ((m / 1000.0 * sample_rate) as usize).max(1);
-        // Short, mutually-detuned delays: dense early soundboard modes.
-        let lens = [ms(7.9), ms(11.3), ms(14.7), ms(18.9)];
-        let rt = 0.55; // seconds to -60 dB
-        let mut fb = [0f32; 4];
-        for (i, &len) in lens.iter().enumerate() {
-            fb[i] = 10f32.powf(-3.0 * len as f32 / (rt * sample_rate));
-        }
-        Body {
-            lines: lens.map(|l| vec![0.0; l]),
-            pos: [0; 4],
-            fb,
-            damp: [0.0; 4],
-            damp_coeff: (-std::f32::consts::TAU * 2800.0 / sample_rate).exp(),
+        let data: BodyModes =
+            serde_json::from_str(include_str!("../data/body_modes.json"))
+                .expect("body modes must parse");
+        let mut body = Body {
+            re: [0.0; 32],
+            im: [0.0; 32],
+            rot_re: [1.0; 32],
+            rot_im: [0.0; 32],
+            decay: [0.0; 32],
+            gain_in: [0.0; 32],
+            n: 0,
             gain,
+        };
+        for m in data.modes.iter().take(32) {
+            if m.freq_hz >= sample_rate * 0.45 {
+                continue;
+            }
+            let k = body.n;
+            let w = std::f32::consts::TAU * m.freq_hz / sample_rate;
+            body.rot_re[k] = w.cos();
+            body.rot_im[k] = w.sin();
+            body.decay[k] = decay_factor(m.decay_db_s, sample_rate);
+            // Driven resonator: normalize resonant buildup by (1 - decay).
+            body.gain_in[k] =
+                (1.0 - body.decay[k]) * 10f32.powf(m.amp_db / 20.0) * 24.0;
+            body.n += 1;
         }
+        body
     }
 
     #[inline]
     fn step(&mut self, input: f32) -> f32 {
-        let mut taps = [0f32; 4];
-        let mut sum = 0.0;
-        for k in 0..4 {
-            taps[k] = self.lines[k][self.pos[k]];
-            sum += taps[k];
-        }
-        let h = 0.5 * sum; // Householder (2/N, N=4)
         let mut out = 0.0;
-        for k in 0..4 {
-            let mut v = (taps[k] - h) * self.fb[k] + input * 0.5;
-            self.damp[k] = self.damp[k] * self.damp_coeff + v * (1.0 - self.damp_coeff);
-            v = self.damp[k];
-            self.lines[k][self.pos[k]] = v;
-            self.pos[k] += 1;
-            if self.pos[k] == self.lines[k].len() {
-                self.pos[k] = 0;
-            }
-            out += if k % 2 == 0 { taps[k] } else { -taps[k] };
+        for k in 0..self.n {
+            out += self.im[k];
+            let re = (self.re[k] * self.rot_re[k] - self.im[k] * self.rot_im[k])
+                * self.decay[k]
+                + input * self.gain_in[k];
+            self.im[k] =
+                (self.re[k] * self.rot_im[k] + self.im[k] * self.rot_re[k]) * self.decay[k];
+            self.re[k] = re;
         }
         out * self.gain
     }

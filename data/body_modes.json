@@ -1,0 +1,146 @@
+{
+ "version": 1,
+ "source": "HPSS percussive of notes 105-108, all layers",
+ "modes": [
+  {
+   "freq_hz": 312.2,
+   "amp_db": -20.1,
+   "decay_db_s": 87.9
+  },
+  {
+   "freq_hz": 425.3,
+   "amp_db": -17.7,
+   "decay_db_s": 99.3
+  },
+  {
+   "freq_hz": 468.3,
+   "amp_db": -20.4,
+   "decay_db_s": 99.1
+  },
+  {
+   "freq_hz": 592.2,
+   "amp_db": -15.7,
+   "decay_db_s": 106.3
+  },
+  {
+   "freq_hz": 699.8,
+   "amp_db": -16.2,
+   "decay_db_s": 112.6
+  },
+  {
+   "freq_hz": 893.6,
+   "amp_db": -7.9,
+   "decay_db_s": 120.0
+  },
+  {
+   "freq_hz": 1205.9,
+   "amp_db": 0.0,
+   "decay_db_s": 120.0
+  },
+  {
+   "freq_hz": 1302.8,
+   "amp_db": -11.6,
+   "decay_db_s": 120.0
+  },
+  {
+   "freq_hz": 1491.2,
+   "amp_db": -12.0,
+   "decay_db_s": 120.0
+  },
+  {
+   "freq_hz": 1582.7,
+   "amp_db": -14.2,
+   "decay_db_s": 119.6
+  },
+  {
+   "freq_hz": 1668.8,
+   "amp_db": -16.8,
+   "decay_db_s": 120.0
+  },
+  {
+   "freq_hz": 1776.5,
+   "amp_db": -12.1,
+   "decay_db_s": 119.5
+  },
+  {
+   "freq_hz": 1878.8,
+   "amp_db": -6.4,
+   "decay_db_s": 120.0
+  },
+  {
+   "freq_hz": 2309.4,
+   "amp_db": -8.8,
+   "decay_db_s": 120.0
+  },
+  {
+   "freq_hz": 2374.0,
+   "amp_db": -8.8,
+   "decay_db_s": 120.0
+  },
+  {
+   "freq_hz": 2524.8,
+   "amp_db": -18.1,
+   "decay_db_s": 113.5
+  },
+  {
+   "freq_hz": 2610.9,
+   "amp_db": -17.4,
+   "decay_db_s": 120.0
+  },
+  {
+   "freq_hz": 2659.4,
+   "amp_db": -16.3,
+   "decay_db_s": 120.0
+  },
+  {
+   "freq_hz": 2713.2,
+   "amp_db": -16.3,
+   "decay_db_s": 120.0
+  },
+  {
+   "freq_hz": 2874.7,
+   "amp_db": -15.2,
+   "decay_db_s": 120.0
+  },
+  {
+   "freq_hz": 2977.0,
+   "amp_db": -15.4,
+   "decay_db_s": 120.0
+  },
+  {
+   "freq_hz": 3036.2,
+   "amp_db": -13.0,
+   "decay_db_s": 120.0
+  },
+  {
+   "freq_hz": 3197.7,
+   "amp_db": -10.6,
+   "decay_db_s": 120.0
+  },
+  {
+   "freq_hz": 3499.1,
+   "amp_db": -15.4,
+   "decay_db_s": 120.0
+  },
+  {
+   "freq_hz": 3655.3,
+   "amp_db": -15.9,
+   "decay_db_s": 120.0
+  },
+  {
+   "freq_hz": 3913.7,
+   "amp_db": -14.1,
+   "decay_db_s": 120.0
+  },
+  {
+   "freq_hz": 4522.0,
+   "amp_db": -16.9,
+   "decay_db_s": 120.0
+  },
+  {
+   "freq_hz": 5544.8,
+   "amp_db": -27.1,
+   "decay_db_s": 120.0
+  }
+ ]
+}
