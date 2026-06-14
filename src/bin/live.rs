@@ -149,7 +149,7 @@ fn main() {
     let dry = args.iter().any(|a| a == "--dry");
     let mut room = (!dry).then(|| {
         if wet.is_some() || rt60.is_some() {
-            piano::reverb::Reverb::new(sample_rate as f32, rt60.unwrap_or(1.5), wet.unwrap_or(0.5))
+            piano::reverb::Reverb::new(sample_rate as f32, rt60.unwrap_or(1.5), wet.unwrap_or(0.35))
         } else {
             piano::reverb::Reverb::default_room(sample_rate as f32)
         }

@@ -57,7 +57,7 @@ impl Reverb {
         Reverb::new(
             sample_rate,
             get("PIANO_REVERB_RT60", 1.5),
-            get("PIANO_REVERB_WET", 0.5),
+            get("PIANO_REVERB_WET", 0.35),
         )
     }
 
