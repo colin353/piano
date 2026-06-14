@@ -55,6 +55,16 @@ struct Voice {
     attack_slow_coeff: f32,
     attack_fast: f32,
     attack_fast_coeff: f32,
+    /// Prompt-sound transient: a fast-decaying brightness boost at onset
+    /// (weighted to the upper partials) so the note "speaks" with a bright
+    /// attack that darkens into the tone, instead of the steady spectrum
+    /// from t=0. trans_env starts at the per-note overshoot and decays.
+    trans_env: f32,
+    trans_decay: f32,
+    trans_w_slow: f32,
+    trans_w_fast: f32,
+    spike_env: f32,
+    spike_decay: f32,
     /// Attack pitch glide: a hard-struck string is momentarily sharp
     /// (tension modulation) and settles over ~100 ms. Current sharpness
     /// in cents; rotations are refreshed per block while it rings down.
@@ -392,6 +402,15 @@ struct Knobs {
     /// Concert-pitch reference for A4, Hz (default 440). Lets you match a
     /// recording or play at a different reference.
     tuning_hz: f32,
+    /// Prompt-sound overshoot: upper-partial brightness boost at onset,
+    /// decaying over attack_tau_ms. attack_spike adds a faster, broader
+    /// boost (attack_spike_ms) for the treble percussive crack.
+    attack_overshoot: f32,
+    attack_tau_ms: f32,
+    attack_spike: f32,
+    attack_spike_ms: f32,
+    /// Master gain on the body-mode strike (the broadband onset flash).
+    strike_gain: f32,
 }
 
 impl Knobs {
@@ -415,6 +434,11 @@ impl Knobs {
             body_gain: get("PIANO_BODY_GAIN", 0.25),
             strike_noise: get("PIANO_STRIKE_NOISE", 0.0),
             tuning_hz: get("PIANO_TUNING_HZ", 440.0),
+            attack_overshoot: get("PIANO_ATTACK_OVERSHOOT", 3.0),
+            attack_tau_ms: get("PIANO_ATTACK_TAU_MS", 120.0),
+            attack_spike: get("PIANO_ATTACK_SPIKE", 4.0),
+            attack_spike_ms: get("PIANO_ATTACK_SPIKE_MS", 8.0),
+            strike_gain: get("PIANO_STRIKE_GAIN", 1.0),
         }
     }
 }
@@ -689,9 +713,10 @@ impl Synth for ModalV2 {
         let mut perc_a = [(0f32, 0f32); 4];
         // The key strike: identical absolute mechanism on all 88 keys.
         let strike_vel = (vel / 0.9).powi(2);
+        let sg = self.knobs.noise_gain * self.knobs.strike_gain;
         let strike = [
-            STRIKE_ABS[0] * strike_vel * self.knobs.noise_gain,
-            STRIKE_ABS[1] * strike_vel * self.knobs.noise_gain,
+            STRIKE_ABS[0] * strike_vel * sg,
+            STRIKE_ABS[1] * strike_vel * sg,
             0.0,
             0.0,
         ];
@@ -726,6 +751,16 @@ impl Synth for ModalV2 {
                     / 3.0;
                 1.0 / (t * self.sample_rate)
             },
+            // Prompt-sound overshoot (upper partials, ~tau_ms) + a faster
+            // broadband spike for the treble crack. Both grow with velocity
+            // (hard strikes are brighter/more percussive); the spike is
+            // register-weighted toward the treble.
+            trans_env: self.knobs.attack_overshoot * (vel * vel),
+            trans_decay: (-1.0 / (self.knobs.attack_tau_ms / 1000.0 * self.sample_rate)).exp(),
+            trans_w_slow: 0.3,
+            trans_w_fast: 1.0,
+            spike_env: self.knobs.attack_spike * (vel * vel) * (0.1 + 1.6 * pos * pos),
+            spike_decay: (-1.0 / (self.knobs.attack_spike_ms / 1000.0 * self.sample_rate)).exp(),
             diffuse_amp: STRIKE_ABS[2] * (vel / 0.9).powi(2)
                 * self.knobs.noise_gain
                 * self.knobs.strike_noise,
@@ -998,7 +1033,14 @@ impl Synth for ModalV2 {
                 }
                 voice.attack_slow = (voice.attack_slow + voice.attack_slow_coeff).min(1.0);
                 voice.attack_fast = (voice.attack_fast + voice.attack_fast_coeff).min(1.0);
-                let sum = sum_slow * voice.attack_slow + sum_fast * voice.attack_fast;
+                // Prompt-sound boost: overshoot weights the upper partials,
+                // the spike hits both groups broadband, both decaying.
+                let boost_slow = 1.0 + voice.trans_env * voice.trans_w_slow + voice.spike_env;
+                let boost_fast = 1.0 + voice.trans_env * voice.trans_w_fast + voice.spike_env;
+                let sum = sum_slow * voice.attack_slow * boost_slow
+                    + sum_fast * voice.attack_fast * boost_fast;
+                voice.trans_env *= voice.trans_decay;
+                voice.spike_env *= voice.spike_decay;
                 let mut l = sum * voice.pan_l;
                 let mut r = sum * voice.pan_r;
                 if voice.noise_amp > 1e-7 || voice.bed_amp > 1e-7

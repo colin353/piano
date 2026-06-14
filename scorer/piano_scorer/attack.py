@@ -47,7 +47,8 @@ def _render_note(note, velocity):
         wav = Path(td) / "n.wav"
         subprocess.run(
             [str(REPO_ROOT / "target/release/piano-render"), "note",
-             str(note), str(velocity), "--dur", "1.0", "-o", str(wav)],
+             str(note), str(velocity), "--synth", "modal-v2",
+             "--dur", "1.0", "-o", str(wav)],
             check=True, capture_output=True)
         return features.load_mono(wav)
 
