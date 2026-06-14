@@ -434,6 +434,10 @@ struct Knobs {
     /// high partials (short-lived 4-8 kHz attack energy).
     attack_hf: f32,
     attack_hf_tau_ms: f32,
+    /// Additive hammer-pulse excitation floor for the high partials
+    /// (amplitude rel. the fundamental), filling the short-lived 6-9 kHz
+    /// burst the sustain-window calibration measured as near-silent.
+    attack_hf_floor: f32,
     /// Master gain on the body-mode strike (the broadband onset flash).
     strike_gain: f32,
 }
@@ -465,6 +469,7 @@ impl Knobs {
             attack_spike_ms: get("PIANO_ATTACK_SPIKE_MS", 8.0),
             attack_hf: get("PIANO_ATTACK_HF", 10.0),
             attack_hf_tau_ms: get("PIANO_ATTACK_HF_TAU_MS", 70.0),
+            attack_hf_floor: get("PIANO_ATTACK_HF_FLOOR", 0.005),
             strike_gain: get("PIANO_STRIKE_GAIN", 1.0),
         }
     }
@@ -857,8 +862,20 @@ impl Synth for ModalV2 {
                 0.0
             };
             let una_tilt = if una { -0.35 * (nf - 1.0) } else { 0.0 };
-            let amp = level * 10f32.powf((params.amps_db[n - 1] + tilt_db + una_tilt) / 20.0);
-            let fast = (params.decays_fast[n - 1] * self.knobs.fast_scale).clamp(0.3, 300.0);
+            let amp_cal = level * 10f32.powf((params.amps_db[n - 1] + tilt_db + una_tilt) / 20.0);
+            // Hammer-pulse HF excitation floor: the strike drives the high
+            // modes to an amplitude set by the contact pulse, NOT the (near-
+            // silent) sustained level our calibration measured. Ramp in
+            // above 2.5 kHz; scale with velocity^2 (contact-time). Floored
+            // partials get a guaranteed-fast decay so it's a short burst,
+            // not bright sustain.
+            let hf_wt = ((freq - 2500.0) / 4500.0).clamp(0.0, 1.0);
+            let hf_floor = level * self.knobs.attack_hf_floor * (vel * vel) * hf_wt;
+            let amp = amp_cal.max(hf_floor);
+            let mut fast = (params.decays_fast[n - 1] * self.knobs.fast_scale).clamp(0.3, 300.0);
+            if hf_floor > amp_cal {
+                fast = fast.max(45.0);
+            }
             let slow = params.decays_slow[n - 1].clamp(0.3, fast);
             // Cap the slow share of the dominant low partials: a 50/50
             // split lets the unison components cancel completely, which
