@@ -10,6 +10,7 @@ pub mod events;
 pub mod modal;
 pub mod modal2;
 pub mod render;
+pub mod eq;
 pub mod reverb;
 
 /// A streaming piano synthesizer.

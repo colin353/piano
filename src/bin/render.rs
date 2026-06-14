@@ -112,9 +112,13 @@ fn main() {
             // dry `note` path); --dry disables.
             if !args.iter().any(|a| a == "--dry") {
                 let mut room = piano::reverb::Reverb::default_room(sample_rate);
+                let mut eq = piano::eq::MasterEq::from_env(sample_rate);
                 let n = audio.len() / 2;
                 let mut l: Vec<f32> = (0..n).map(|i| audio[2 * i]).collect();
                 let mut r: Vec<f32> = (0..n).map(|i| audio[2 * i + 1]).collect();
+                // EQ the instrument before the room, so the tail reverberates
+                // the brightened tone rather than getting brightened itself.
+                eq.process(&mut l, &mut r);
                 room.process(&mut l, &mut r);
                 for i in 0..n {
                     audio[2 * i] = l[i];

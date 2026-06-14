@@ -154,6 +154,7 @@ fn main() {
             piano::reverb::Reverb::default_room(sample_rate as f32)
         }
     });
+    let mut eq = (!dry).then(|| piano::eq::MasterEq::from_env(sample_rate as f32));
     // Soft peak limiter: loud chords + the wet room can exceed full scale,
     // and raw clipping at the device is audible as 'tearing'. Instant
     // attack, ~80 ms release.
@@ -183,6 +184,9 @@ fn main() {
                 for frames in out.chunks_mut(BLOCK * channels) {
                     let n = frames.len() / channels;
                     synth.process(&mut left[..n], &mut right[..n]);
+                    if let Some(eq) = eq.as_mut() {
+                        eq.process(&mut left[..n], &mut right[..n]);
+                    }
                     if let Some(room) = room.as_mut() {
                         room.process(&mut left[..n], &mut right[..n]);
                     }
