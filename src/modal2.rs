@@ -55,6 +55,10 @@ struct Voice {
     attack_slow_coeff: f32,
     attack_fast: f32,
     attack_fast_coeff: f32,
+    /// Swell shape exponent on the attack gain: >1 makes the onset bloom
+    /// gradually from near-silence (bass/mid swell) instead of arriving
+    /// near-full; ~1 in the treble where the note should crack in fast.
+    swell_exp: f32,
     /// Prompt-sound transient: a fast-decaying brightness boost at onset
     /// (weighted to the upper partials) so the note "speaks" with a bright
     /// attack that darkens into the tone, instead of the steady spectrum
@@ -702,6 +706,10 @@ impl Synth for ModalV2 {
             .exp_m1();
 
         let pos = (note as f32 - 21.0) / 87.0;
+        // Register weight for attack character: 0 through the bass/mid
+        // (notes <= ~C5, which swell), ramping to 1 in the treble (notes
+        // >= ~C7, which crack in percussively).
+        let treble = (((note as f32) - 66.0) / 22.0).clamp(0.0, 1.0);
         // Hard strikes start sharp: tension-modulation glide, strongest
         // low on the keyboard, negligible for soft playing.
         let glide0 = self.knobs.glide_cents * vel * vel * vel * (1.2 - pos);
@@ -747,19 +755,24 @@ impl Synth for ModalV2 {
             },
             attack_fast: 0.0,
             attack_fast_coeff: {
+                // Upper partials lead the fundamental by 1.3x (bass/mid, so
+                // they swell together) up to 3x (treble crack).
+                let lead = 1.3 + 1.7 * treble;
                 let t = (params.attack_ms * self.knobs.attack_scale / 1000.0).clamp(0.002, 0.09)
-                    / 3.0;
+                    / lead;
                 1.0 / (t * self.sample_rate)
             },
+            // Bass/mid bloom from near-silence (exp ~2.1); treble cracks in
+            // (exp ~1.0).
+            swell_exp: 2.1 - 1.1 * treble,
             // Prompt-sound overshoot (upper partials, ~tau_ms) + a faster
-            // broadband spike for the treble crack. Both grow with velocity
-            // (hard strikes are brighter/more percussive); the spike is
-            // register-weighted toward the treble.
+            // broadband spike that is TREBLE-ONLY: mid/bass notes swell
+            // rather than crack, so a t=0 spike there is anti-physical.
             trans_env: self.knobs.attack_overshoot * (vel * vel),
             trans_decay: (-1.0 / (self.knobs.attack_tau_ms / 1000.0 * self.sample_rate)).exp(),
             trans_w_slow: 0.3,
             trans_w_fast: 1.0,
-            spike_env: self.knobs.attack_spike * (vel * vel) * (0.1 + 1.6 * pos * pos),
+            spike_env: self.knobs.attack_spike * (vel * vel) * treble * treble,
             spike_decay: (-1.0 / (self.knobs.attack_spike_ms / 1000.0 * self.sample_rate)).exp(),
             diffuse_amp: STRIKE_ABS[2] * (vel / 0.9).powi(2)
                 * self.knobs.noise_gain
@@ -1033,12 +1046,16 @@ impl Synth for ModalV2 {
                 }
                 voice.attack_slow = (voice.attack_slow + voice.attack_slow_coeff).min(1.0);
                 voice.attack_fast = (voice.attack_fast + voice.attack_fast_coeff).min(1.0);
+                // Swell shape: power curve so bass/mid bloom from near-
+                // silence instead of arriving near-full.
+                let g_slow = voice.attack_slow.powf(voice.swell_exp);
+                let g_fast = voice.attack_fast.powf(voice.swell_exp);
                 // Prompt-sound boost: overshoot weights the upper partials,
                 // the spike hits both groups broadband, both decaying.
                 let boost_slow = 1.0 + voice.trans_env * voice.trans_w_slow + voice.spike_env;
                 let boost_fast = 1.0 + voice.trans_env * voice.trans_w_fast + voice.spike_env;
-                let sum = sum_slow * voice.attack_slow * boost_slow
-                    + sum_fast * voice.attack_fast * boost_fast;
+                let sum = sum_slow * g_slow * boost_slow
+                    + sum_fast * g_fast * boost_fast;
                 voice.trans_env *= voice.trans_decay;
                 voice.spike_env *= voice.spike_decay;
                 let mut l = sum * voice.pan_l;
