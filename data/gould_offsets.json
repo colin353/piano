@@ -1,0 +1,47 @@
+{
+ "Aria_02271": {
+  "off": 3.7,
+  "dur": 196.0,
+  "peak": 1.0
+ },
+ "Var_12_Canone_alla_Quarta_02346": {
+  "off": 817.28,
+  "dur": 106.0,
+  "peak": 0.724
+ },
+ "Var_18_Canone_alla_Sesta_a_1_Clav_02354": {
+  "off": 1592.32,
+  "dur": 76.0,
+  "peak": 0.837
+ },
+ "Var_21_Canone_alla_Settima_02341": {
+  "off": 1769.98,
+  "dur": 144.6,
+  "peak": 0.853
+ },
+ "Var_24_Canone_allOttava_a_1_Clav_02231": {
+  "off": 2023.17,
+  "dur": 106.2,
+  "peak": 0.767
+ },
+ "Var_27_Canone_alla_Nona_02291": {
+  "off": 2538.88,
+  "dur": 91.5,
+  "peak": 0.783
+ },
+ "Var_30_Quodlibet_a_1_Clav_02350": {
+  "off": 2745.86,
+  "dur": 93.1,
+  "peak": 0.897
+ },
+ "Var_3_Canone_allUnisono_a_1_Clav_02261": {
+  "off": 292.86,
+  "dur": 106.0,
+  "peak": 0.813
+ },
+ "Var_9_Canone_alla_Terza_a_1_Clav_02297": {
+  "off": 642.05,
+  "dur": 66.0,
+  "peak": 0.84
+ }
+}

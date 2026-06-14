@@ -385,6 +385,10 @@ struct Knobs {
     bank_drive: f32,
     bank_ping: f32,
     body_gain: f32,
+    /// Scales ONLY the noise-based attack bursts (1-4 kHz diffuse + the
+    /// HF contact click) — the snare-like part. The wooden body-mode ping
+    /// and the release thud are unaffected. 0.0 = no attack noise.
+    strike_noise: f32,
 }
 
 impl Knobs {
@@ -406,6 +410,7 @@ impl Knobs {
             bank_drive: get("PIANO_BANK_DRIVE", 0.031),
             bank_ping: get("PIANO_BANK_PING", 0.08),
             body_gain: get("PIANO_BODY_GAIN", 0.25),
+            strike_noise: get("PIANO_STRIKE_NOISE", 0.0),
         }
     }
 }
@@ -716,7 +721,9 @@ impl Synth for ModalV2 {
                     / 3.0;
                 1.0 / (t * self.sample_rate)
             },
-            diffuse_amp: STRIKE_ABS[2] * (vel / 0.9).powi(2) * self.knobs.noise_gain,
+            diffuse_amp: STRIKE_ABS[2] * (vel / 0.9).powi(2)
+                * self.knobs.noise_gain
+                * self.knobs.strike_noise,
             diffuse_decay: decay_factor(60.0 / 0.080, self.sample_rate),
             diffuse_b: biquad_lowpass(3200.0, 0.8, self.sample_rate).0,
             diffuse_a: biquad_lowpass(3200.0, 0.8, self.sample_rate).1,
@@ -724,7 +731,9 @@ impl Synth for ModalV2 {
             // Brief stochastic contact click (felt/string graze), level
             // from the fitted top band; everything tonal about the strike
             // lives in the body modes.
-            noise_amp: STRIKE_ABS[3] * (vel / 0.9).powi(2) * self.knobs.noise_gain,
+            noise_amp: STRIKE_ABS[3] * (vel / 0.9).powi(2)
+                * self.knobs.noise_gain
+                * self.knobs.strike_noise,
             noise_decay: decay_factor(60.0 / 0.008, self.sample_rate),
             noise_b: biquad_bandpass(5500.0, 0.6, self.sample_rate).0,
             noise_a: biquad_bandpass(5500.0, 0.6, self.sample_rate).1,
