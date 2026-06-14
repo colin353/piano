@@ -35,6 +35,10 @@ struct Voice {
     decay: [f32; MAX_RES],
     /// Base angular step per resonator, for the attack pitch glide.
     base_w: [f32; MAX_RES],
+    /// High-frequency attack weight per resonator (0 below ~2.5 kHz,
+    /// ramping to 1 above ~5 kHz): which partials get the fast-decaying
+    /// hammer-pulse excitation (the short-lived 4-8 kHz attack energy).
+    hf_w: [f32; MAX_RES],
     /// Per-resonator damper factor (1.0 = open). Frequency-dependent: the
     /// damper felt kills high partials almost instantly while the
     /// fundamental of low notes audibly rings through it — a uniform cut
@@ -103,6 +107,15 @@ struct Voice {
     // range. Steeper filtering keeps the low body, kills the hiss.
     bed_y: (f32, f32),
     bed_y2: (f32, f32),
+    /// Hammer-pulse high-frequency excitation: a fast-decaying boost of the
+    /// high partials at onset (the short-lived 4-8 kHz energy the felt
+    /// contact dumps into the high modes). Tonal (boosts partials, not
+    /// noise), so it doesn't reintroduce the snare.
+    hf_env: f32,
+    hf_decay: f32,
+    /// First chunk index (multiple of LANES) with any HF-weighted partial;
+    /// lower chunks skip the HF accumulation entirely.
+    hf_start: usize,
 }
 
 impl Voice {
@@ -122,6 +135,8 @@ impl Voice {
         self.rot_im[k] = w.sin();
         self.base_w[k] = w;
         self.decay[k] = decay_factor(decay_db_s, sr);
+        // HF attack weight: ramp 0 (2.5 kHz) -> 1 (5 kHz+).
+        self.hf_w[k] = ((freq - 2500.0) / 2500.0).clamp(0.0, 1.0);
         self.n += 1;
     }
 
@@ -136,6 +151,7 @@ impl Voice {
                     self.rot_re[keep] = self.rot_re[k];
                     self.rot_im[keep] = self.rot_im[k];
                     self.base_w[keep] = self.base_w[k];
+                    self.hf_w[keep] = self.hf_w[k];
                     self.decay[keep] = self.decay[k];
                     self.damping[keep] = self.damping[k];
                 }
@@ -154,6 +170,7 @@ impl Voice {
             self.rot_re[k] = 1.0;
             self.rot_im[k] = 0.0;
             self.base_w[k] = 0.0;
+            self.hf_w[k] = 0.0;
             self.decay[k] = 0.0;
             self.damping[k] = 1.0;
             self.n += 1;
@@ -413,6 +430,10 @@ struct Knobs {
     attack_tau_ms: f32,
     attack_spike: f32,
     attack_spike_ms: f32,
+    /// Hammer-pulse high-frequency excitation: fast-decaying boost of the
+    /// high partials (short-lived 4-8 kHz attack energy).
+    attack_hf: f32,
+    attack_hf_tau_ms: f32,
     /// Master gain on the body-mode strike (the broadband onset flash).
     strike_gain: f32,
 }
@@ -442,6 +463,8 @@ impl Knobs {
             attack_tau_ms: get("PIANO_ATTACK_TAU_MS", 120.0),
             attack_spike: get("PIANO_ATTACK_SPIKE", 4.0),
             attack_spike_ms: get("PIANO_ATTACK_SPIKE_MS", 8.0),
+            attack_hf: get("PIANO_ATTACK_HF", 10.0),
+            attack_hf_tau_ms: get("PIANO_ATTACK_HF_TAU_MS", 70.0),
             strike_gain: get("PIANO_STRIKE_GAIN", 1.0),
         }
     }
@@ -740,6 +763,7 @@ impl Synth for ModalV2 {
             rot_re: [1.0; MAX_RES],
             rot_im: [0.0; MAX_RES],
             base_w: [0.0; MAX_RES],
+            hf_w: [0.0; MAX_RES],
             decay: [0.0; MAX_RES],
             damping: [1.0; MAX_RES],
             damper_blend: 1.0,
@@ -773,6 +797,12 @@ impl Synth for ModalV2 {
             trans_w_slow: 0.3,
             trans_w_fast: 1.0,
             spike_env: self.knobs.attack_spike * (vel * vel) * treble * treble,
+            // Hammer-pulse HF excitation: scales with velocity squared
+            // (shorter, flatter contact pulse on hard strikes -> more
+            // 4-8 kHz energy), decaying over attack_hf_tau_ms.
+            hf_env: self.knobs.attack_hf * (vel * vel),
+            hf_decay: (-1.0 / (self.knobs.attack_hf_tau_ms / 1000.0 * self.sample_rate)).exp(),
+            hf_start: 0,
             spike_decay: (-1.0 / (self.knobs.attack_spike_ms / 1000.0 * self.sample_rate)).exp(),
             diffuse_amp: STRIKE_ABS[2] * (vel / 0.9).powi(2)
                 * self.knobs.noise_gain
@@ -906,6 +936,10 @@ impl Synth for ModalV2 {
             voice.im[k] *= scale;
         }
         voice.pad();
+        // First chunk holding an HF-weighted partial (frequency-ordered),
+        // so the process loop skips HF work on the low chunks.
+        let first_hf = (0..voice.n).find(|&k| voice.hf_w[k] > 0.0).unwrap_or(voice.n);
+        voice.hf_start = (first_hf / LANES) * LANES;
         self.voices.push(voice);
         // Advance the synth RNG so consecutive notes get fresh phases.
         self.rng = self.rng.wrapping_mul(0x9E3779B9).wrapping_add(1);
@@ -1017,25 +1051,51 @@ impl Synth for ModalV2 {
                     }
                 }
             }
+            // The HF attack excitation only runs while its envelope is
+            // audible (~first 200 ms) and only on the high chunks (hf_w is
+            // 0 below ~2.5 kHz, and partials are frequency-ordered). Both
+            // lane loops stay branchless so they autovectorize.
+            let hf_active = voice.hf_env > 1e-4;
             for i in 0..left.len() {
                 let mut sum_slow = 0.0f32;
                 let mut sum_fast = 0.0f32;
+                let mut sum_hf = 0.0f32;
                 for chunk in (0..voice.n).step_by(LANES) {
                     let mut acc = [0f32; LANES];
-                    // Fixed-width branchless lane loop: autovectorizes.
-                    for lane in 0..LANES {
-                        let k = chunk + lane;
-                        let out = voice.im[k];
-                        let scale = voice.decay[k]
-                            * (1.0 + (voice.damping[k] - 1.0) * blend);
-                        let re = (voice.re[k] * voice.rot_re[k]
-                            - voice.im[k] * voice.rot_im[k])
-                            * scale;
-                        voice.im[k] = (voice.re[k] * voice.rot_im[k]
-                            + voice.im[k] * voice.rot_re[k])
-                            * scale;
-                        voice.re[k] = re;
-                        acc[lane] += out;
+                    let do_hf = hf_active && chunk >= voice.hf_start;
+                    if do_hf {
+                        let mut acc_hf = [0f32; LANES];
+                        for lane in 0..LANES {
+                            let k = chunk + lane;
+                            let out = voice.im[k];
+                            let scale = voice.decay[k]
+                                * (1.0 + (voice.damping[k] - 1.0) * blend);
+                            let re = (voice.re[k] * voice.rot_re[k]
+                                - voice.im[k] * voice.rot_im[k])
+                                * scale;
+                            voice.im[k] = (voice.re[k] * voice.rot_im[k]
+                                + voice.im[k] * voice.rot_re[k])
+                                * scale;
+                            voice.re[k] = re;
+                            acc[lane] += out;
+                            acc_hf[lane] += out * voice.hf_w[k];
+                        }
+                        sum_hf += acc_hf.iter().sum::<f32>();
+                    } else {
+                        for lane in 0..LANES {
+                            let k = chunk + lane;
+                            let out = voice.im[k];
+                            let scale = voice.decay[k]
+                                * (1.0 + (voice.damping[k] - 1.0) * blend);
+                            let re = (voice.re[k] * voice.rot_re[k]
+                                - voice.im[k] * voice.rot_im[k])
+                                * scale;
+                            voice.im[k] = (voice.re[k] * voice.rot_im[k]
+                                + voice.im[k] * voice.rot_re[k])
+                                * scale;
+                            voice.re[k] = re;
+                            acc[lane] += out;
+                        }
                     }
                     let chunk_sum: f32 = acc.iter().sum();
                     if chunk == 0 {
@@ -1047,17 +1107,23 @@ impl Synth for ModalV2 {
                 voice.attack_slow = (voice.attack_slow + voice.attack_slow_coeff).min(1.0);
                 voice.attack_fast = (voice.attack_fast + voice.attack_fast_coeff).min(1.0);
                 // Swell shape: power curve so bass/mid bloom from near-
-                // silence instead of arriving near-full.
-                let g_slow = voice.attack_slow.powf(voice.swell_exp);
-                let g_fast = voice.attack_fast.powf(voice.swell_exp);
+                // silence instead of arriving near-full. Once the ramp has
+                // finished (the sustain — the common case) the gain is 1
+                // and the powf is skipped.
+                let g_slow = if voice.attack_slow >= 1.0 { 1.0 }
+                    else { voice.attack_slow.powf(voice.swell_exp) };
+                let g_fast = if voice.attack_fast >= 1.0 { 1.0 }
+                    else { voice.attack_fast.powf(voice.swell_exp) };
                 // Prompt-sound boost: overshoot weights the upper partials,
                 // the spike hits both groups broadband, both decaying.
                 let boost_slow = 1.0 + voice.trans_env * voice.trans_w_slow + voice.spike_env;
                 let boost_fast = 1.0 + voice.trans_env * voice.trans_w_fast + voice.spike_env;
                 let sum = sum_slow * g_slow * boost_slow
-                    + sum_fast * g_fast * boost_fast;
+                    + sum_fast * g_fast * boost_fast
+                    + sum_hf * voice.hf_env;
                 voice.trans_env *= voice.trans_decay;
                 voice.spike_env *= voice.spike_decay;
+                voice.hf_env *= voice.hf_decay;
                 let mut l = sum * voice.pan_l;
                 let mut r = sum * voice.pan_r;
                 if voice.noise_amp > 1e-7 || voice.bed_amp > 1e-7
