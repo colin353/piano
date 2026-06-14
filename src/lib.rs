@@ -12,6 +12,8 @@ pub mod modal2;
 pub mod render;
 pub mod eq;
 pub mod reverb;
+#[cfg(target_arch = "wasm32")]
+pub mod wasm;
 
 /// A streaming piano synthesizer.
 ///

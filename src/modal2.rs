@@ -465,11 +465,11 @@ impl Knobs {
             tuning_hz: get("PIANO_TUNING_HZ", 440.0),
             attack_overshoot: get("PIANO_ATTACK_OVERSHOOT", 3.0),
             attack_tau_ms: get("PIANO_ATTACK_TAU_MS", 120.0),
-            attack_spike: get("PIANO_ATTACK_SPIKE", 4.0),
+            attack_spike: get("PIANO_ATTACK_SPIKE", 2.5),
             attack_spike_ms: get("PIANO_ATTACK_SPIKE_MS", 8.0),
-            attack_hf: get("PIANO_ATTACK_HF", 10.0),
+            attack_hf: get("PIANO_ATTACK_HF", 4.0),
             attack_hf_tau_ms: get("PIANO_ATTACK_HF_TAU_MS", 70.0),
-            attack_hf_floor: get("PIANO_ATTACK_HF_FLOOR", 0.005),
+            attack_hf_floor: get("PIANO_ATTACK_HF_FLOOR", 0.0),
             strike_gain: get("PIANO_STRIKE_GAIN", 1.0),
         }
     }
@@ -629,6 +629,47 @@ impl ModalV2 {
             body: Body::new(sample_rate, Knobs::from_env().body_gain),
             knobs: Knobs::from_env(),
         }
+    }
+
+    /// Set a tuning knob at runtime by its env-var suffix (e.g. "ATTACK_HF").
+    /// Used by the WASM engine so the web UI can tweak parameters live.
+    /// Returns true if the name matched a knob.
+    pub fn set_param(&mut self, name: &str, v: f32) -> bool {
+        let k = &mut self.knobs;
+        match name {
+            "DETUNE_SCALE" => k.detune_scale = v,
+            "ATTACK_SCALE" => k.attack_scale = v,
+            "GLIDE_CENTS" => k.glide_cents = v,
+            "BED_GAIN" => k.bed_gain = v,
+            "NOISE_GAIN" => k.noise_gain = v,
+            "SPLIT_MAX" => k.split_max = v,
+            "FAST_SCALE" => k.fast_scale = v,
+            "BANK_PING" => k.bank_ping = v,
+            "STRIKE_NOISE" => k.strike_noise = v,
+            "ATTACK_OVERSHOOT" => k.attack_overshoot = v,
+            "ATTACK_TAU_MS" => k.attack_tau_ms = v,
+            "ATTACK_SPIKE" => k.attack_spike = v,
+            "ATTACK_SPIKE_MS" => k.attack_spike_ms = v,
+            "ATTACK_HF" => k.attack_hf = v,
+            "ATTACK_HF_TAU_MS" => k.attack_hf_tau_ms = v,
+            "ATTACK_HF_FLOOR" => k.attack_hf_floor = v,
+            "STRIKE_GAIN" => k.strike_gain = v,
+            "BANK_DRIVE" => {
+                k.bank_drive = v;
+                self.bank_drive = v;
+            }
+            // These shape the prebuilt banks, so rebuild them.
+            "BODY_GAIN" => {
+                k.body_gain = v;
+                self.body = Body::new(self.sample_rate, v);
+            }
+            "TUNING_HZ" => {
+                k.tuning_hz = v;
+                self.bank = StringBank::new(self.sample_rate, v / 440.0);
+            }
+            _ => return false,
+        }
+        true
     }
 }
 

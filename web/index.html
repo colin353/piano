@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>piano — live tuning</title>
+<style>
+  :root { --bg:#15171c; --panel:#1e2128; --ink:#e6e8ec; --mut:#9aa2ad; --acc:#6db1ff; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.4 system-ui,sans-serif; }
+  header { padding:12px 18px; background:var(--panel); display:flex; gap:14px; align-items:center; flex-wrap:wrap; position:sticky; top:0; z-index:5; }
+  header h1 { font-size:16px; margin:0; font-weight:600; }
+  button { background:#2a2e37; color:var(--ink); border:1px solid #3a3f4a; border-radius:7px; padding:7px 12px; cursor:pointer; font-size:13px; }
+  button:hover { background:#333845; }
+  button.primary { background:var(--acc); color:#06203f; border-color:var(--acc); font-weight:600; }
+  .wrap { display:flex; gap:16px; padding:16px; align-items:flex-start; flex-wrap:wrap; }
+  .col { flex:1 1 340px; min-width:320px; }
+  .group { background:var(--panel); border-radius:10px; padding:10px 14px 14px; margin-bottom:14px; }
+  .group h2 { font-size:12px; letter-spacing:.06em; text-transform:uppercase; color:var(--mut); margin:4px 0 10px; }
+  .knob { display:grid; grid-template-columns:130px 1fr 64px; gap:10px; align-items:center; margin:7px 0; }
+  .knob label { color:var(--mut); font-size:12px; }
+  .knob input[type=range] { width:100%; accent-color:var(--acc); }
+  .knob .val { font-variant-numeric:tabular-nums; text-align:right; font-size:12px; }
+  .kbd { user-select:none; display:flex; position:relative; height:120px; margin-top:8px; }
+  .key { border:1px solid #000; border-radius:0 0 5px 5px; }
+  .key.w { background:#eef0f3; width:34px; height:120px; z-index:1; }
+  .key.b { background:#23262d; width:22px; height:74px; margin:0 -11px; z-index:2; }
+  .key.on { background:var(--acc); }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:8px 0; }
+  select { background:#2a2e37; color:var(--ink); border:1px solid #3a3f4a; border-radius:6px; padding:5px; }
+  textarea { width:100%; height:120px; background:#11131a; color:#cfe; border:1px solid #333; border-radius:7px; font-family:ui-monospace,monospace; font-size:12px; padding:8px; }
+  .hint { color:var(--mut); font-size:12px; }
+  #status { color:var(--mut); }
+</style>
+</head>
+<body>
+<header>
+  <h1>piano · live tuning</h1>
+  <button id="power" class="primary">▶ Start audio</button>
+  <button id="strike">Strike C4 ff</button>
+  <button id="chord">C-major chord</button>
+  <button id="phrase">Short phrase</button>
+  <label class="hint">vel <input id="vel" type="range" min="1" max="127" value="114" style="vertical-align:middle"><span id="velv">114</span></label>
+  <label class="hint"><input id="sustain" type="checkbox"> sustain</label>
+  <span id="status">loading wasm…</span>
+</header>
+
+<div class="wrap">
+  <div class="col" id="knobsA"></div>
+  <div class="col" id="knobsB"></div>
+  <div class="col">
+    <div class="group">
+      <h2>Keyboard</h2>
+      <div class="hint">Click keys, use your computer row <code>A&hellip;K</code> (+<code>W E&hellip;</code>), or a MIDI device.</div>
+      <div class="row"><label class="hint">MIDI in:</label><select id="midi"></select></div>
+      <div id="keyboard" class="kbd"></div>
+    </div>
+    <div class="group">
+      <h2>Reference (real Steinway)</h2>
+      <div class="row">
+        <button data-ref="real_c4_ff.wav">▶ Real C4 ff</button>
+        <button data-ref="real_c5_ff.wav">▶ Real C5 ff</button>
+        <button data-ref="real_c3_ff.wav">▶ Real C3 ff</button>
+      </div>
+      <div class="hint">A/B these against your live synth (Strike C4 ff etc.).</div>
+    </div>
+    <div class="group">
+      <h2>Export settings</h2>
+      <div class="row">
+        <button id="copy">Copy as env vars</button>
+        <button id="reset">Reset to shipped defaults</button>
+      </div>
+      <textarea id="export" readonly></textarea>
+      <div class="hint">Paste this back to bake the values as defaults.</div>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+import init, { Engine } from './pkg/piano.js';
+
+// name, label, min, max, step, default, group(0=A col,1=B col)
+const KNOBS = [
+  // --- Attack (the focus) ---
+  ['ATTACK_OVERSHOOT','Overshoot (bloom)',0,8,0.1,3.0,0],
+  ['ATTACK_TAU_MS','Overshoot decay ms',10,250,5,120,0],
+  ['ATTACK_SPIKE','Treble spike',0,12,0.25,2.5,0],
+  ['ATTACK_SPIKE_MS','Spike ms',2,30,1,8,0],
+  ['ATTACK_HF','HF boost (mult)',0,18,0.5,4.0,0],
+  ['ATTACK_HF_TAU_MS','HF decay ms',20,200,5,70,0],
+  ['ATTACK_HF_FLOOR','HF floor (add)',0,0.03,0.001,0.0,0],
+  ['ATTACK_SCALE','Rise-time scale',0.3,2.5,0.05,0.77,0],
+  ['GLIDE_CENTS','Pitch glide cents',0,12,0.5,3.0,0],
+  ['STRIKE_GAIN','Body-strike gain',0,4,0.1,1.0,0],
+  ['STRIKE_NOISE','Strike noise',0,1.5,0.05,0.0,0],
+  ['NOISE_GAIN','Noise gain',0,3,0.1,1.0,0],
+  // --- Tone / EQ / resonance / room ---
+  ['EQ_HIGH_DB','EQ high-shelf dB',-6,14,0.5,6.0,1],
+  ['EQ_HIGH_HZ','EQ high-shelf Hz',800,6000,100,2500,1],
+  ['EQ_PEAK_DB','EQ presence dB',-6,14,0.5,4.0,1],
+  ['EQ_PEAK_HZ','EQ presence Hz',2000,9000,100,5000,1],
+  ['EQ_LOW_DB','EQ bass dB',-9,4,0.5,-2.0,1],
+  ['REVERB_WET','Reverb wet',0,1,0.02,0.35,1],
+  ['REVERB_RT60','Reverb RT60 s',0.5,3.5,0.05,1.5,1],
+  ['BED_GAIN','Soundboard bed',0,3,0.05,0.82,1],
+  ['BODY_GAIN','Body resonance',0,1,0.02,0.25,1],
+  ['BANK_DRIVE','Sympathetic drive',0,0.08,0.002,0.031,1],
+  ['DETUNE_SCALE','Unison detune',0.3,3,0.05,1.82,1],
+  ['FAST_SCALE','Prompt decay scale',0.5,2,0.05,0.8,1],
+  ['SPLIT_MAX','Aftersound split',0.3,0.95,0.02,0.7,1],
+  ['TUNING_HZ','Tuning A4 Hz',415,466,0.5,440,1],
+];
+
+let ctx, engine, wasm, node, started=false;
+const state = {};
+KNOBS.forEach(k => state[k[0]] = k[5]);
+
+function buildKnobUI() {
+  for (const k of KNOBS) {
+    const [name,label,min,max,step,def,col] = k;
+    const tgt = document.getElementById(col===0?'knobsA':'knobsB');
+    if (!tgt.dataset.init) { tgt.innerHTML = `<div class="group"><h2>${col===0?'Attack & strike':'Tone · EQ · room'}</h2></div>`; tgt.dataset.init='1'; }
+    const div = document.createElement('div'); div.className='knob';
+    div.innerHTML = `<label title="PIANO_${name}">${label}</label>
+      <input type="range" min="${min}" max="${max}" step="${step}" value="${def}" id="s_${name}">
+      <span class="val" id="v_${name}">${def}</span>`;
+    tgt.firstChild.appendChild(div);
+    const slider = div.querySelector('input');
+    slider.addEventListener('input', () => {
+      const val = parseFloat(slider.value);
+      state[name]=val; document.getElementById('v_'+name).textContent = val;
+      if (engine) engine.set_param(name, val);
+    });
+  }
+}
+
+function applyAll(){ if(!engine) return; for(const n in state) engine.set_param(n, state[n]); }
+
+async function start() {
+  if (started) { await ctx.resume(); return; }
+  started = true;
+  ctx = new (window.AudioContext||window.webkitAudioContext)();
+  engine = new Engine(ctx.sampleRate);
+  applyAll();
+  node = ctx.createScriptProcessor(2048, 0, 2);
+  node.onaudioprocess = (e) => {
+    const frames = e.outputBuffer.length;
+    engine.render(frames);
+    const buf = wasm.memory.buffer;
+    const L = new Float32Array(buf, engine.left_ptr(), frames);
+    const R = new Float32Array(buf, engine.right_ptr(), frames);
+    e.outputBuffer.getChannelData(0).set(L);
+    e.outputBuffer.getChannelData(1).set(R);
+  };
+  node.connect(ctx.destination);
+  document.getElementById('status').textContent = `running · ${ctx.sampleRate} Hz`;
+  document.getElementById('power').textContent = '⏸ Audio on';
+}
+
+const vel = () => parseInt(document.getElementById('vel').value);
+function noteOn(n){ if(engine){ engine.note_on(n, vel()); flash(n,true);} }
+function noteOff(n){ if(engine){ engine.note_off(n); flash(n,false);} }
+
+// --- test triggers ---
+document.getElementById('strike').onclick = async ()=>{ await start(); engine.note_on(60,vel()); setTimeout(()=>engine.note_off(60),1800); };
+document.getElementById('chord').onclick = async ()=>{ await start(); [60,64,67,72].forEach(n=>engine.note_on(n,vel())); setTimeout(()=>[60,64,67,72].forEach(n=>engine.note_off(n)),1800); };
+document.getElementById('phrase').onclick = async ()=>{ await start();
+  const seq=[[60,0],[62,180],[64,360],[65,540],[67,720],[72,950],[71,1250],[72,1450]];
+  seq.forEach(([n,t])=>{ setTimeout(()=>engine.note_on(n,vel()),t); setTimeout(()=>engine.note_off(n),t+500); }); };
+document.getElementById('power').onclick = async ()=>{ if(started && ctx.state==='running'){ await ctx.suspend(); document.getElementById('power').textContent='▶ Resume'; } else { await start(); } };
+document.getElementById('vel').oninput = e=> document.getElementById('velv').textContent=e.target.value;
+document.getElementById('sustain').onchange = e=>{ if(engine) engine.set_sustain(e.target.checked?1:0); };
+
+// --- on-screen keyboard ---
+const KB_LO=53, KB_HI=77; // F3..F5
+function buildKeyboard(){
+  const k=document.getElementById('keyboard'); k.innerHTML='';
+  const isB = m => [1,3,6,8,10].includes(((m%12)+12)%12);
+  for(let m=KB_LO;m<=KB_HI;m++){
+    const el=document.createElement('div'); el.className='key '+(isB(m)?'b':'w'); el.dataset.m=m;
+    el.addEventListener('mousedown',()=>{start().then(()=>noteOn(m));});
+    el.addEventListener('mouseup',()=>noteOff(m));
+    el.addEventListener('mouseleave',()=>{if(el.classList.contains('on'))noteOff(m);});
+    k.appendChild(el);
+  }
+}
+function flash(m,on){ const el=document.querySelector(`.key[data-m="${m}"]`); if(el) el.classList.toggle('on',on); }
+
+// --- computer keyboard ---
+const CK={a:60,w:61,s:62,e:63,d:64,f:65,t:66,g:67,y:68,h:69,u:70,j:71,k:72,o:73,l:74};
+const down={};
+addEventListener('keydown',e=>{ if(e.repeat)return; const n=CK[e.key]; if(n!=null&&!down[n]){down[n]=1;start().then(()=>noteOn(n));}});
+addEventListener('keyup',e=>{ const n=CK[e.key]; if(n!=null){down[n]=0;noteOff(n);}});
+
+// --- Web MIDI ---
+async function initMidi(){
+  if(!navigator.requestMIDIAccess) return;
+  try{
+    const a=await navigator.requestMIDIAccess();
+    const sel=document.getElementById('midi'); sel.innerHTML='<option>— none —</option>';
+    const inputs=[...a.inputs.values()];
+    inputs.forEach((inp,i)=>{ const o=document.createElement('option'); o.value=i; o.textContent=inp.name; sel.appendChild(o); });
+    const bind=()=>{ inputs.forEach(inp=>inp.onmidimessage=null);
+      const i=sel.value; const inp=inputs[i]; if(!inp)return;
+      inp.onmidimessage=ev=>{ const[st,d1,d2]=ev.data; const c=st&0xf0;
+        if(c===0x90&&d2>0){start().then(()=>{engine.note_on(d1,d2);flash(d1,true);});}
+        else if(c===0x80||(c===0x90&&d2===0)){if(engine){engine.note_off(d1);flash(d1,false);}}
+        else if(c===0xb0&&d1===64){if(engine)engine.set_sustain(d2/127);}
+        else if(c===0xb0&&d1===67){if(engine)engine.set_control(67,d2/127);} };
+    };
+    sel.onchange=bind; if(inputs.length){sel.value=0;bind();}
+  }catch(_){}
+}
+
+// --- reference samples ---
+const refCache={};
+document.querySelectorAll('[data-ref]').forEach(b=>b.onclick=async()=>{
+  await start();
+  const f=b.dataset.ref;
+  if(!refCache[f]){ const r=await fetch('refs/'+f); const ab=await r.arrayBuffer(); refCache[f]=await ctx.decodeAudioData(ab); }
+  const s=ctx.createBufferSource(); s.buffer=refCache[f]; s.connect(ctx.destination); s.start();
+});
+
+// --- export / reset ---
+document.getElementById('copy').onclick=()=>{
+  const parts=KNOBS.map(k=>`PIANO_${k[0]}=${state[k[0]]}`);
+  const txt='# paste back to bake these defaults\n'+parts.join(' \\\n')+' \\\n  ./target/release/piano-live';
+  const ta=document.getElementById('export'); ta.value=txt; ta.select();
+  navigator.clipboard&&navigator.clipboard.writeText(txt);
+};
+document.getElementById('reset').onclick=()=>{
+  for(const k of KNOBS){ state[k[0]]=k[5]; const s=document.getElementById('s_'+k[0]); if(s){s.value=k[5];} document.getElementById('v_'+k[0]).textContent=k[5]; }
+  applyAll();
+};
+
+buildKnobUI(); buildKeyboard();
+wasm = await init();
+document.getElementById('status').textContent='wasm ready — press Start audio';
+initMidi();
+</script>
+</body>
+</html>

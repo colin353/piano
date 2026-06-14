@@ -101,6 +101,22 @@ impl MasterEq {
         let peak_q = g("PIANO_EQ_PEAK_Q", 0.8);
         let high_db = g("PIANO_EQ_HIGH_DB", 6.0);
         let high_hz = g("PIANO_EQ_HIGH_HZ", 2500.0);
+        MasterEq::with_params(sr, low_db, low_hz, peak_db, peak_hz, peak_q, high_db, high_hz)
+    }
+
+    /// Explicit-parameter constructor (used by the WASM engine for live
+    /// tuning, where there are no env vars).
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_params(
+        sr: f32,
+        low_db: f32,
+        low_hz: f32,
+        peak_db: f32,
+        peak_hz: f32,
+        peak_q: f32,
+        high_db: f32,
+        high_hz: f32,
+    ) -> MasterEq {
         let stages = vec![
             Biquad::low_shelf(low_hz, low_db, sr),
             Biquad::peak(peak_hz, peak_q, peak_db, sr),

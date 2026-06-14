@@ -3,13 +3,23 @@ name = "piano"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
-cpal = "0.16"
 hound = "3.5"
-midir = "0.10"
 midly = "0.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# Native-only: OS audio/MIDI for the CLI binaries; these don't build to wasm.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+cpal = "0.16"
+midir = "0.10"
+
+# Wasm-only: the in-browser tuning app (web/).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "=0.2.100"
 
 [profile.release]
 lto = true
