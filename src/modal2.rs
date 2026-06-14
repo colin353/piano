@@ -212,7 +212,7 @@ struct StringBank {
 }
 
 impl StringBank {
-    fn new(sample_rate: f32) -> Box<StringBank> {
+    fn new(sample_rate: f32, tuning: f32) -> Box<StringBank> {
         let cal = Calibration::embedded();
         let mut bank = Box::new(StringBank {
             re: [0.0; BANK_RES],
@@ -232,7 +232,7 @@ impl StringBank {
         for string in 0..BANK_NOTES {
             let note = 21 + string as u8;
             let params = cal.lookup(note, 100);
-            let f0 = midi_note_freq(note) * 2f32.powf(params.f0_cents / 1200.0);
+            let f0 = midi_note_freq(note) * 2f32.powf(params.f0_cents / 1200.0) * tuning;
             let pos = string as f32 / 87.0;
             let angle = (0.25 + 0.5 * pos) * std::f32::consts::FRAC_PI_2;
             for p in 0..BANK_PARTIALS {
@@ -288,7 +288,7 @@ impl StringBank {
         for played in 0..BANK_NOTES {
             let note = 21 + played as u8;
             let params = cal.lookup(note, 100);
-            let f0 = midi_note_freq(note) * 2f32.powf(params.f0_cents / 1200.0);
+            let f0 = midi_note_freq(note) * 2f32.powf(params.f0_cents / 1200.0) * tuning;
             for m in 1..=16usize {
                 let mf = m as f32;
                 let freq = mf * f0 * (1.0 + params.b * mf * mf).sqrt();
@@ -389,6 +389,9 @@ struct Knobs {
     /// HF contact click) — the snare-like part. The wooden body-mode ping
     /// and the release thud are unaffected. 0.0 = no attack noise.
     strike_noise: f32,
+    /// Concert-pitch reference for A4, Hz (default 440). Lets you match a
+    /// recording or play at a different reference.
+    tuning_hz: f32,
 }
 
 impl Knobs {
@@ -411,6 +414,7 @@ impl Knobs {
             bank_ping: get("PIANO_BANK_PING", 0.08),
             body_gain: get("PIANO_BODY_GAIN", 0.25),
             strike_noise: get("PIANO_STRIKE_NOISE", 0.0),
+            tuning_hz: get("PIANO_TUNING_HZ", 440.0),
         }
     }
 }
@@ -563,7 +567,7 @@ impl ModalV2 {
             una_corda: false,
             rng: 0x12345678,
             held: [false; 128],
-            bank: StringBank::new(sample_rate),
+            bank: StringBank::new(sample_rate, Knobs::from_env().tuning_hz / 440.0),
             bank_drive: Knobs::from_env().bank_drive,
             bank_level: 1.0,
             body: Body::new(sample_rate, Knobs::from_env().body_gain),
@@ -658,7 +662,8 @@ impl Synth for ModalV2 {
         let una = self.una_corda;
         let params = Calibration::embedded().lookup(note, velocity);
         let vel = velocity as f32 / 127.0;
-        let f0 = midi_note_freq(note) * 2f32.powf(params.f0_cents / 1200.0);
+        let f0 = midi_note_freq(note) * 2f32.powf(params.f0_cents / 1200.0)
+            * (self.knobs.tuning_hz / 440.0);
         let nyquist = self.sample_rate * 0.5 * 0.95;
         // Target early RMS: global gain x velocity curve x the measured
         // keyboard balance of the reference piano. Partial amplitudes are
