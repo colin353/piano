@@ -117,9 +117,11 @@ fn main() {
                 let mut l: Vec<f32> = (0..n).map(|i| audio[2 * i]).collect();
                 let mut r: Vec<f32> = (0..n).map(|i| audio[2 * i + 1]).collect();
                 // EQ the instrument before the room, so the tail reverberates
-                // the brightened tone rather than getting brightened itself.
+                // the brightened tone rather than getting brightened itself;
+                // master-bus compress/saturate last.
                 eq.process(&mut l, &mut r);
                 room.process(&mut l, &mut r);
+                piano::comp::Compressor::from_env(sample_rate).process(&mut l, &mut r);
                 for i in 0..n {
                     audio[2 * i] = l[i];
                     audio[2 * i + 1] = r[i];

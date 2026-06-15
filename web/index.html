@@ -8,17 +8,18 @@
   :root { --bg:#15171c; --panel:#1e2128; --ink:#e6e8ec; --mut:#9aa2ad; --acc:#6db1ff; }
   * { box-sizing: border-box; }
   body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.4 system-ui,sans-serif; }
-  header { padding:12px 18px; background:var(--panel); display:flex; gap:14px; align-items:center; flex-wrap:wrap; position:sticky; top:0; z-index:5; }
+  header { padding:12px 18px; background:var(--panel); display:flex; gap:12px; align-items:center; flex-wrap:wrap; position:sticky; top:0; z-index:5; }
   header h1 { font-size:16px; margin:0; font-weight:600; }
   button { background:#2a2e37; color:var(--ink); border:1px solid #3a3f4a; border-radius:7px; padding:7px 12px; cursor:pointer; font-size:13px; }
   button:hover { background:#333845; }
   button.primary { background:var(--acc); color:#06203f; border-color:var(--acc); font-weight:600; }
+  button.on { background:#3ad29a; color:#053; border-color:#3ad29a; font-weight:600; }
   .wrap { display:flex; gap:16px; padding:16px; align-items:flex-start; flex-wrap:wrap; }
   .col { flex:1 1 340px; min-width:320px; }
   .group { background:var(--panel); border-radius:10px; padding:10px 14px 14px; margin-bottom:14px; }
   .group h2 { font-size:12px; letter-spacing:.06em; text-transform:uppercase; color:var(--mut); margin:4px 0 10px; }
-  .knob { display:grid; grid-template-columns:130px 1fr 64px; gap:10px; align-items:center; margin:7px 0; }
-  .knob label { color:var(--mut); font-size:12px; }
+  .knob { display:grid; grid-template-columns:140px 1fr 60px; gap:10px; align-items:center; margin:6px 0; }
+  .knob label { color:var(--mut); font-size:12px; cursor:help; }
   .knob input[type=range] { width:100%; accent-color:var(--acc); }
   .knob .val { font-variant-numeric:tabular-nums; text-align:right; font-size:12px; }
   .kbd { user-select:none; display:flex; position:relative; height:120px; margin-top:8px; }
@@ -38,20 +39,21 @@
   <h1>piano · live tuning</h1>
   <button id="power" class="primary">▶ Start audio</button>
   <button id="strike">Strike C4 ff</button>
-  <button id="chord">C-major chord</button>
-  <button id="phrase">Short phrase</button>
+  <button id="loop">🔁 Loop</button>
+  <button id="chord">Chord</button>
+  <button id="phrase">Phrase</button>
   <label class="hint">vel <input id="vel" type="range" min="1" max="127" value="114" style="vertical-align:middle"><span id="velv">114</span></label>
   <label class="hint"><input id="sustain" type="checkbox"> sustain</label>
   <span id="status">loading wasm…</span>
 </header>
 
 <div class="wrap">
-  <div class="col" id="knobsA"></div>
-  <div class="col" id="knobsB"></div>
+  <div class="col" id="colA"></div>
+  <div class="col" id="colB"></div>
   <div class="col">
     <div class="group">
       <h2>Keyboard</h2>
-      <div class="hint">Click keys, use your computer row <code>A&hellip;K</code> (+<code>W E&hellip;</code>), or a MIDI device.</div>
+      <div class="hint">Per-note knobs (attack, strike, tone) apply to the <b>next</b> strike — use <b>🔁 Loop</b> to hear changes live. Click keys, computer row <code>A&hellip;K</code>, or MIDI.</div>
       <div class="row"><label class="hint">MIDI in:</label><select id="midi"></select></div>
       <div id="keyboard" class="kbd"></div>
     </div>
@@ -62,7 +64,7 @@
         <button data-ref="real_c5_ff.wav">▶ Real C5 ff</button>
         <button data-ref="real_c3_ff.wav">▶ Real C3 ff</button>
       </div>
-      <div class="hint">A/B these against your live synth (Strike C4 ff etc.).</div>
+      <div class="hint">A/B against your live synth.</div>
     </div>
     <div class="group">
       <h2>Export settings</h2>
@@ -71,7 +73,6 @@
         <button id="reset">Reset to shipped defaults</button>
       </div>
       <textarea id="export" readonly></textarea>
-      <div class="hint">Paste this back to bake the values as defaults.</div>
     </div>
   </div>
 </div>
@@ -79,162 +80,168 @@
 <script type="module">
 import init, { Engine } from './pkg/piano.js';
 
-// name, label, min, max, step, default, group(0=A col,1=B col)
+// name, label, min, max, step, default, col('A'|'B'), group
 const KNOBS = [
-  // --- Attack (the focus) ---
-  ['ATTACK_OVERSHOOT','Overshoot (bloom)',0,8,0.1,3.0,0],
-  ['ATTACK_TAU_MS','Overshoot decay ms',10,250,5,120,0],
-  ['ATTACK_SPIKE','Treble spike',0,12,0.25,2.5,0],
-  ['ATTACK_SPIKE_MS','Spike ms',2,30,1,8,0],
-  ['ATTACK_HF','HF boost (mult)',0,18,0.5,4.0,0],
-  ['ATTACK_HF_TAU_MS','HF decay ms',20,200,5,70,0],
-  ['ATTACK_HF_FLOOR','HF floor (add)',0,0.03,0.001,0.0,0],
-  ['ATTACK_SCALE','Rise-time scale',0.3,2.5,0.05,0.77,0],
-  ['GLIDE_CENTS','Pitch glide cents',0,12,0.5,3.0,0],
-  ['STRIKE_GAIN','Body-strike gain',0,4,0.1,1.0,0],
-  ['STRIKE_NOISE','Strike noise',0,1.5,0.05,0.0,0],
-  ['NOISE_GAIN','Noise gain',0,3,0.1,1.0,0],
-  // --- Tone / EQ / resonance / room ---
-  ['EQ_HIGH_DB','EQ high-shelf dB',-6,14,0.5,6.0,1],
-  ['EQ_HIGH_HZ','EQ high-shelf Hz',800,6000,100,2500,1],
-  ['EQ_PEAK_DB','EQ presence dB',-6,14,0.5,4.0,1],
-  ['EQ_PEAK_HZ','EQ presence Hz',2000,9000,100,5000,1],
-  ['EQ_LOW_DB','EQ bass dB',-9,4,0.5,-2.0,1],
-  ['REVERB_WET','Reverb wet',0,1,0.02,0.35,1],
-  ['REVERB_RT60','Reverb RT60 s',0.5,3.5,0.05,1.5,1],
-  ['BED_GAIN','Soundboard bed',0,3,0.05,0.82,1],
-  ['BODY_GAIN','Body resonance',0,1,0.02,0.25,1],
-  ['BANK_DRIVE','Sympathetic drive',0,0.08,0.002,0.031,1],
-  ['DETUNE_SCALE','Unison detune',0.3,3,0.05,1.82,1],
-  ['FAST_SCALE','Prompt decay scale',0.5,2,0.05,0.8,1],
-  ['SPLIT_MAX','Aftersound split',0.3,0.95,0.02,0.7,1],
-  ['TUNING_HZ','Tuning A4 Hz',415,466,0.5,440,1],
+  ['ATTACK_OVERSHOOT','Overshoot (bloom)',0,16,0.1,3.0,'A','Attack'],
+  ['ATTACK_TAU_MS','Overshoot decay ms',10,500,5,120,'A','Attack'],
+  ['ATTACK_SPIKE','Treble spike',0,24,0.25,2.5,'A','Attack'],
+  ['ATTACK_SPIKE_MS','Spike ms',2,60,1,8,'A','Attack'],
+  ['ATTACK_HF','HF boost (mult)',0,36,0.5,4.0,'A','Attack'],
+  ['ATTACK_HF_TAU_MS','HF decay ms',20,400,5,70,'A','Attack'],
+  ['ATTACK_HF_FLOOR','HF floor (add)',0,0.06,0.001,0.0,'A','Attack'],
+  ['ATTACK_SCALE','Rise-time scale',0.1,5,0.05,0.77,'A','Attack'],
+  ['GLIDE_CENTS','Pitch glide cents',0,24,0.5,3.0,'A','Attack'],
+  ['STRIKE_GAIN','Body-strike gain',0,8,0.1,1.0,'A','Strike & noise'],
+  ['STRIKE_NOISE','Strike noise',0,3,0.05,0.0,'A','Strike & noise'],
+  ['NOISE_GAIN','Noise gain',0,6,0.1,1.0,'A','Strike & noise'],
+
+  ['EQ_HIGH_DB','EQ high-shelf dB',-12,24,0.5,6.0,'B','Tone / EQ'],
+  ['EQ_HIGH_HZ','EQ high-shelf Hz',400,8000,100,2500,'B','Tone / EQ'],
+  ['EQ_PEAK_DB','EQ presence dB',-12,24,0.5,4.0,'B','Tone / EQ'],
+  ['EQ_PEAK_HZ','EQ presence Hz',1000,12000,100,5000,'B','Tone / EQ'],
+  ['EQ_LOW_DB','EQ bass dB',-18,8,0.5,-2.0,'B','Tone / EQ'],
+  ['EQ_ON','EQ on',0,1,1,1,'B','Tone / EQ'],
+  ['DETUNE_SCALE','Unison detune',0.1,6,0.05,1.82,'B','Tone / EQ'],
+  ['FAST_SCALE','Prompt decay scale',0.25,4,0.05,0.8,'B','Tone / EQ'],
+  ['SPLIT_MAX','Aftersound split',0.1,0.95,0.02,0.7,'B','Tone / EQ'],
+  ['TUNING_HZ','Tuning A4 Hz',400,480,0.5,440,'B','Tone / EQ'],
+
+  ['REVERB_WET','Reverb wet',0,1.5,0.02,0.35,'B','Room & resonance'],
+  ['REVERB_RT60','Reverb RT60 s',0.3,7,0.05,1.5,'B','Room & resonance'],
+  ['REVERB_ON','Reverb on',0,1,1,1,'B','Room & resonance'],
+  ['BED_GAIN','Soundboard bed',0,6,0.05,0.82,'B','Room & resonance'],
+  ['BODY_GAIN','Body resonance',0,2,0.02,0.25,'B','Room & resonance'],
+  ['BANK_DRIVE','Sympathetic drive',0,0.16,0.002,0.031,'B','Room & resonance'],
+
+  ['COMP_ON','Compressor on',0,1,1,1,'B','Compressor (VHS)'],
+  ['COMP_THRESH_DB','Threshold dB',-48,0,0.5,-22,'B','Compressor (VHS)'],
+  ['COMP_RATIO','Ratio :1',1,20,0.25,2.5,'B','Compressor (VHS)'],
+  ['COMP_ATTACK_MS','Attack ms',0.5,100,0.5,15,'B','Compressor (VHS)'],
+  ['COMP_RELEASE_MS','Release ms',20,800,5,160,'B','Compressor (VHS)'],
+  ['COMP_MAKEUP_DB','Makeup dB',0,18,0.5,3,'B','Compressor (VHS)'],
+  ['COMP_DRIVE','Saturation (tape)',0,1,0.02,0.12,'B','Compressor (VHS)'],
 ];
 
-let ctx, engine, wasm, node, started=false;
+let ctx, engine, wasm, node, started=false, loopTimer=null;
 const state = {};
 KNOBS.forEach(k => state[k[0]] = k[5]);
 
 function buildKnobUI() {
+  const groups = {};
   for (const k of KNOBS) {
-    const [name,label,min,max,step,def,col] = k;
-    const tgt = document.getElementById(col===0?'knobsA':'knobsB');
-    if (!tgt.dataset.init) { tgt.innerHTML = `<div class="group"><h2>${col===0?'Attack & strike':'Tone · EQ · room'}</h2></div>`; tgt.dataset.init='1'; }
-    const div = document.createElement('div'); div.className='knob';
-    div.innerHTML = `<label title="PIANO_${name}">${label}</label>
+    const [name,label,min,max,step,def,col,grp] = k;
+    const colEl = document.getElementById('col'+col);
+    const key = col+'/'+grp;
+    if (!groups[key]) {
+      const g=document.createElement('div'); g.className='group';
+      g.innerHTML=`<h2>${grp}</h2>`; colEl.appendChild(g); groups[key]=g;
+    }
+    const div=document.createElement('div'); div.className='knob';
+    div.innerHTML=`<label title="PIANO_${name}">${label}</label>
       <input type="range" min="${min}" max="${max}" step="${step}" value="${def}" id="s_${name}">
       <span class="val" id="v_${name}">${def}</span>`;
-    tgt.firstChild.appendChild(div);
-    const slider = div.querySelector('input');
-    slider.addEventListener('input', () => {
-      const val = parseFloat(slider.value);
-      state[name]=val; document.getElementById('v_'+name).textContent = val;
+    groups[key].appendChild(div);
+    div.querySelector('input').addEventListener('input', e=>{
+      const val=parseFloat(e.target.value);
+      state[name]=val; document.getElementById('v_'+name).textContent=val;
       if (engine) engine.set_param(name, val);
     });
   }
 }
-
 function applyAll(){ if(!engine) return; for(const n in state) engine.set_param(n, state[n]); }
 
 async function start() {
   if (started) { await ctx.resume(); return; }
-  started = true;
-  ctx = new (window.AudioContext||window.webkitAudioContext)();
-  engine = new Engine(ctx.sampleRate);
-  applyAll();
-  node = ctx.createScriptProcessor(2048, 0, 2);
-  node.onaudioprocess = (e) => {
-    const frames = e.outputBuffer.length;
+  started=true;
+  ctx=new (window.AudioContext||window.webkitAudioContext)();
+  engine=new Engine(ctx.sampleRate); applyAll();
+  node=ctx.createScriptProcessor(2048,0,2);
+  node.onaudioprocess=(e)=>{
+    const frames=e.outputBuffer.length;
     engine.render(frames);
-    const buf = wasm.memory.buffer;
-    const L = new Float32Array(buf, engine.left_ptr(), frames);
-    const R = new Float32Array(buf, engine.right_ptr(), frames);
-    e.outputBuffer.getChannelData(0).set(L);
-    e.outputBuffer.getChannelData(1).set(R);
+    const buf=wasm.memory.buffer;
+    e.outputBuffer.getChannelData(0).set(new Float32Array(buf, engine.left_ptr(), frames));
+    e.outputBuffer.getChannelData(1).set(new Float32Array(buf, engine.right_ptr(), frames));
   };
   node.connect(ctx.destination);
-  document.getElementById('status').textContent = `running · ${ctx.sampleRate} Hz`;
-  document.getElementById('power').textContent = '⏸ Audio on';
+  document.getElementById('status').textContent=`running · ${ctx.sampleRate} Hz`;
+  document.getElementById('power').textContent='⏸ Audio on';
 }
 
-const vel = () => parseInt(document.getElementById('vel').value);
-function noteOn(n){ if(engine){ engine.note_on(n, vel()); flash(n,true);} }
-function noteOff(n){ if(engine){ engine.note_off(n); flash(n,false);} }
+const vel=()=>parseInt(document.getElementById('vel').value);
+function noteOn(n){ if(engine){engine.note_on(n,vel());flash(n,true);} }
+function noteOff(n){ if(engine){engine.note_off(n);flash(n,false);} }
+function strikeC4(){ if(!engine)return; engine.note_on(60,vel()); setTimeout(()=>engine.note_off(60),1800); }
 
-// --- test triggers ---
-document.getElementById('strike').onclick = async ()=>{ await start(); engine.note_on(60,vel()); setTimeout(()=>engine.note_off(60),1800); };
-document.getElementById('chord').onclick = async ()=>{ await start(); [60,64,67,72].forEach(n=>engine.note_on(n,vel())); setTimeout(()=>[60,64,67,72].forEach(n=>engine.note_off(n)),1800); };
-document.getElementById('phrase').onclick = async ()=>{ await start();
-  const seq=[[60,0],[62,180],[64,360],[65,540],[67,720],[72,950],[71,1250],[72,1450]];
-  seq.forEach(([n,t])=>{ setTimeout(()=>engine.note_on(n,vel()),t); setTimeout(()=>engine.note_off(n),t+500); }); };
-document.getElementById('power').onclick = async ()=>{ if(started && ctx.state==='running'){ await ctx.suspend(); document.getElementById('power').textContent='▶ Resume'; } else { await start(); } };
-document.getElementById('vel').oninput = e=> document.getElementById('velv').textContent=e.target.value;
-document.getElementById('sustain').onchange = e=>{ if(engine) engine.set_sustain(e.target.checked?1:0); };
+document.getElementById('strike').onclick=async()=>{await start();strikeC4();};
+document.getElementById('loop').onclick=async(e)=>{
+  await start();
+  if(loopTimer){clearInterval(loopTimer);loopTimer=null;e.target.classList.remove('on');e.target.textContent='🔁 Loop';}
+  else{strikeC4();loopTimer=setInterval(strikeC4,2200);e.target.classList.add('on');e.target.textContent='🔁 Loop ⏹';}
+};
+document.getElementById('chord').onclick=async()=>{await start();[60,64,67,72].forEach(n=>engine.note_on(n,vel()));setTimeout(()=>[60,64,67,72].forEach(n=>engine.note_off(n)),1800);};
+document.getElementById('phrase').onclick=async()=>{await start();
+  [[60,0],[62,180],[64,360],[65,540],[67,720],[72,950],[71,1250],[72,1450]].forEach(([n,t])=>{setTimeout(()=>engine.note_on(n,vel()),t);setTimeout(()=>engine.note_off(n),t+500);});};
+document.getElementById('power').onclick=async()=>{ if(started&&ctx.state==='running'){await ctx.suspend();document.getElementById('power').textContent='▶ Resume';}else{await start();} };
+document.getElementById('vel').oninput=e=>document.getElementById('velv').textContent=e.target.value;
+document.getElementById('sustain').onchange=e=>{if(engine)engine.set_sustain(e.target.checked?1:0);};
 
-// --- on-screen keyboard ---
-const KB_LO=53, KB_HI=77; // F3..F5
+// keyboard
+const KB_LO=53,KB_HI=77;
 function buildKeyboard(){
-  const k=document.getElementById('keyboard'); k.innerHTML='';
-  const isB = m => [1,3,6,8,10].includes(((m%12)+12)%12);
+  const k=document.getElementById('keyboard');k.innerHTML='';
+  const isB=m=>[1,3,6,8,10].includes(((m%12)+12)%12);
   for(let m=KB_LO;m<=KB_HI;m++){
-    const el=document.createElement('div'); el.className='key '+(isB(m)?'b':'w'); el.dataset.m=m;
-    el.addEventListener('mousedown',()=>{start().then(()=>noteOn(m));});
+    const el=document.createElement('div');el.className='key '+(isB(m)?'b':'w');el.dataset.m=m;
+    el.addEventListener('mousedown',()=>start().then(()=>noteOn(m)));
     el.addEventListener('mouseup',()=>noteOff(m));
     el.addEventListener('mouseleave',()=>{if(el.classList.contains('on'))noteOff(m);});
     k.appendChild(el);
   }
 }
-function flash(m,on){ const el=document.querySelector(`.key[data-m="${m}"]`); if(el) el.classList.toggle('on',on); }
-
-// --- computer keyboard ---
+function flash(m,on){const el=document.querySelector(`.key[data-m="${m}"]`);if(el)el.classList.toggle('on',on);}
 const CK={a:60,w:61,s:62,e:63,d:64,f:65,t:66,g:67,y:68,h:69,u:70,j:71,k:72,o:73,l:74};
 const down={};
-addEventListener('keydown',e=>{ if(e.repeat)return; const n=CK[e.key]; if(n!=null&&!down[n]){down[n]=1;start().then(()=>noteOn(n));}});
-addEventListener('keyup',e=>{ const n=CK[e.key]; if(n!=null){down[n]=0;noteOff(n);}});
+addEventListener('keydown',e=>{if(e.repeat)return;const n=CK[e.key];if(n!=null&&!down[n]){down[n]=1;start().then(()=>noteOn(n));}});
+addEventListener('keyup',e=>{const n=CK[e.key];if(n!=null){down[n]=0;noteOff(n);}});
 
-// --- Web MIDI ---
 async function initMidi(){
-  if(!navigator.requestMIDIAccess) return;
+  if(!navigator.requestMIDIAccess)return;
   try{
     const a=await navigator.requestMIDIAccess();
-    const sel=document.getElementById('midi'); sel.innerHTML='<option>— none —</option>';
+    const sel=document.getElementById('midi');sel.innerHTML='<option>— none —</option>';
     const inputs=[...a.inputs.values()];
-    inputs.forEach((inp,i)=>{ const o=document.createElement('option'); o.value=i; o.textContent=inp.name; sel.appendChild(o); });
-    const bind=()=>{ inputs.forEach(inp=>inp.onmidimessage=null);
-      const i=sel.value; const inp=inputs[i]; if(!inp)return;
-      inp.onmidimessage=ev=>{ const[st,d1,d2]=ev.data; const c=st&0xf0;
-        if(c===0x90&&d2>0){start().then(()=>{engine.note_on(d1,d2);flash(d1,true);});}
+    inputs.forEach((inp,i)=>{const o=document.createElement('option');o.value=i;o.textContent=inp.name;sel.appendChild(o);});
+    const bind=()=>{inputs.forEach(inp=>inp.onmidimessage=null);const inp=inputs[sel.value];if(!inp)return;
+      inp.onmidimessage=ev=>{const[st,d1,d2]=ev.data;const c=st&0xf0;
+        if(c===0x90&&d2>0)start().then(()=>{engine.note_on(d1,d2);flash(d1,true);});
         else if(c===0x80||(c===0x90&&d2===0)){if(engine){engine.note_off(d1);flash(d1,false);}}
         else if(c===0xb0&&d1===64){if(engine)engine.set_sustain(d2/127);}
-        else if(c===0xb0&&d1===67){if(engine)engine.set_control(67,d2/127);} };
-    };
-    sel.onchange=bind; if(inputs.length){sel.value=0;bind();}
+        else if(c===0xb0&&d1===67){if(engine)engine.set_control(67,d2/127);}};};
+    sel.onchange=bind;if(inputs.length){sel.value=0;bind();}
   }catch(_){}
 }
 
-// --- reference samples ---
 const refCache={};
 document.querySelectorAll('[data-ref]').forEach(b=>b.onclick=async()=>{
-  await start();
-  const f=b.dataset.ref;
-  if(!refCache[f]){ const r=await fetch('refs/'+f); const ab=await r.arrayBuffer(); refCache[f]=await ctx.decodeAudioData(ab); }
-  const s=ctx.createBufferSource(); s.buffer=refCache[f]; s.connect(ctx.destination); s.start();
+  await start();const f=b.dataset.ref;
+  if(!refCache[f]){const r=await fetch('refs/'+f);refCache[f]=await ctx.decodeAudioData(await r.arrayBuffer());}
+  const s=ctx.createBufferSource();s.buffer=refCache[f];s.connect(ctx.destination);s.start();
 });
 
-// --- export / reset ---
 document.getElementById('copy').onclick=()=>{
   const parts=KNOBS.map(k=>`PIANO_${k[0]}=${state[k[0]]}`);
-  const txt='# paste back to bake these defaults\n'+parts.join(' \\\n')+' \\\n  ./target/release/piano-live';
-  const ta=document.getElementById('export'); ta.value=txt; ta.select();
-  navigator.clipboard&&navigator.clipboard.writeText(txt);
+  const txt='# tuned settings\n'+parts.join(' \\\n')+' \\\n  ./target/release/piano-live';
+  const ta=document.getElementById('export');ta.value=txt;ta.select();
+  if(navigator.clipboard)navigator.clipboard.writeText(txt);
 };
 document.getElementById('reset').onclick=()=>{
-  for(const k of KNOBS){ state[k[0]]=k[5]; const s=document.getElementById('s_'+k[0]); if(s){s.value=k[5];} document.getElementById('v_'+k[0]).textContent=k[5]; }
+  for(const k of KNOBS){state[k[0]]=k[5];const s=document.getElementById('s_'+k[0]);if(s)s.value=k[5];document.getElementById('v_'+k[0]).textContent=k[5];}
   applyAll();
 };
 
-buildKnobUI(); buildKeyboard();
-wasm = await init();
+buildKnobUI();buildKeyboard();
+wasm=await init();
 document.getElementById('status').textContent='wasm ready — press Start audio';
 initMidi();
 </script>

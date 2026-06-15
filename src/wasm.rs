@@ -3,6 +3,7 @@
 //! note events, a `set_param(name, value)` knob setter keyed by the same
 //! PIANO_* suffixes the CLI uses, and a block renderer.
 
+use crate::comp::Compressor;
 use crate::eq::MasterEq;
 use crate::modal2::ModalV2;
 use crate::reverb::Reverb;
@@ -20,8 +21,15 @@ struct StageParams {
     eq_high_hz: f32,
     reverb_rt60: f32,
     reverb_wet: f32,
+    comp_thresh_db: f32,
+    comp_ratio: f32,
+    comp_attack_ms: f32,
+    comp_release_ms: f32,
+    comp_makeup_db: f32,
+    comp_drive: f32,
     eq_on: bool,
     reverb_on: bool,
+    comp_on: bool,
 }
 
 impl Default for StageParams {
@@ -36,8 +44,15 @@ impl Default for StageParams {
             eq_high_hz: 2500.0,
             reverb_rt60: 1.5,
             reverb_wet: 0.35,
+            comp_thresh_db: -22.0,
+            comp_ratio: 2.5,
+            comp_attack_ms: 15.0,
+            comp_release_ms: 160.0,
+            comp_makeup_db: 3.0,
+            comp_drive: 0.12,
             eq_on: true,
             reverb_on: true,
+            comp_on: true,
         }
     }
 }
@@ -47,6 +62,7 @@ pub struct Engine {
     synth: ModalV2,
     eq: MasterEq,
     reverb: Reverb,
+    comp: Compressor,
     sr: f32,
     p: StageParams,
     left: Vec<f32>,
@@ -62,6 +78,7 @@ impl Engine {
             synth: ModalV2::new(sample_rate),
             eq: build_eq(sample_rate, &p),
             reverb: Reverb::new(sample_rate, p.reverb_rt60, p.reverb_wet),
+            comp: build_comp(sample_rate, &p),
             sr: sample_rate,
             p,
             left: vec![0.0; 2048],
@@ -97,14 +114,23 @@ impl Engine {
             "REVERB_RT60" => self.p.reverb_rt60 = value,
             "REVERB_WET" => self.p.reverb_wet = value,
             "REVERB_ON" => self.p.reverb_on = value >= 0.5,
+            "COMP_THRESH_DB" => self.p.comp_thresh_db = value,
+            "COMP_RATIO" => self.p.comp_ratio = value,
+            "COMP_ATTACK_MS" => self.p.comp_attack_ms = value,
+            "COMP_RELEASE_MS" => self.p.comp_release_ms = value,
+            "COMP_MAKEUP_DB" => self.p.comp_makeup_db = value,
+            "COMP_DRIVE" => self.p.comp_drive = value,
+            "COMP_ON" => self.p.comp_on = value >= 0.5,
             other => {
                 self.synth.set_param(other, value);
                 return;
             }
         }
-        // An EQ/reverb knob changed — rebuild the affected stage.
+        // An EQ/reverb/comp knob changed — rebuild the affected stage.
         if name.starts_with("EQ_") {
             self.eq = build_eq(self.sr, &self.p);
+        } else if name.starts_with("COMP_") {
+            self.comp = build_comp(self.sr, &self.p);
         } else {
             self.reverb = Reverb::new(self.sr, self.p.reverb_rt60, self.p.reverb_wet);
         }
@@ -119,11 +145,15 @@ impl Engine {
         let l = &mut self.left[..frames];
         let r = &mut self.right[..frames];
         self.synth.process(l, r);
+        // Match the CLI chain: EQ the instrument, then room, then master comp.
+        if self.p.eq_on {
+            self.eq.process(l, r);
+        }
         if self.p.reverb_on {
             self.reverb.process(l, r);
         }
-        if self.p.eq_on {
-            self.eq.process(l, r);
+        if self.p.comp_on {
+            self.comp.process(l, r);
         }
     }
 
@@ -139,5 +169,12 @@ fn build_eq(sr: f32, p: &StageParams) -> MasterEq {
     MasterEq::with_params(
         sr, p.eq_low_db, p.eq_low_hz, p.eq_peak_db, p.eq_peak_hz, p.eq_peak_q, p.eq_high_db,
         p.eq_high_hz,
+    )
+}
+
+fn build_comp(sr: f32, p: &StageParams) -> Compressor {
+    Compressor::with_params(
+        sr, p.comp_thresh_db, p.comp_ratio, p.comp_attack_ms, p.comp_release_ms, p.comp_makeup_db,
+        p.comp_drive, p.comp_on,
     )
 }
